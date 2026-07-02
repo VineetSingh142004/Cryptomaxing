@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { APP_NAME } from "@/lib/config/constants";
+import { formatApiError, parseApiError } from "@/lib/utils/api-error";
 
 interface DashboardData {
   version: string;
@@ -40,7 +41,10 @@ export function DashboardShell() {
   const fetchDashboard = useCallback(async () => {
     try {
       const res = await fetch("/api/dashboard");
-      if (!res.ok) throw new Error("Failed to load dashboard");
+      if (!res.ok) {
+        const apiErr = await parseApiError(res);
+        throw new Error(formatApiError(apiErr, "Dashboard unavailable"));
+      }
       const json = (await res.json()) as DashboardData & {
         same_day_reality: Record<string, unknown>;
       };

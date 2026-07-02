@@ -60,6 +60,37 @@ export function isAppError(error: unknown): error is AppError {
   return error instanceof AppError;
 }
 
+function isPrismaError(error: unknown): error is Error & { name: string; code?: string } {
+  return error instanceof Error && error.name.startsWith("PrismaClient");
+}
+
+function prismaReasonCode(error: Error & { code?: string }): string {
+  const msg = error.message;
+  if (msg.includes("Can't reach database server") || error.name === "PrismaClientInitializationError") {
+    return "DB_CONNECTION_FAILED";
+  }
+  if (error.code === "P2021" || msg.includes("does not exist")) {
+    return "PRISMA_SCHEMA_NOT_PUSHED";
+  }
+  if (error.code === "P1001") {
+    return "DB_CONNECTION_FAILED";
+  }
+  return "DATABASE_ERROR";
+}
+
+function safePrismaMessage(error: Error): string {
+  if (error.message.includes("Can't reach database server")) {
+    return "Database connection failed — check DATABASE_URL and restart the dev server after changing .env";
+  }
+  if (error.message.includes("does not exist")) {
+    return "Database tables missing — run: npm run db:push";
+  }
+  if (error.message.includes("sslmode") || error.message.includes("SSL")) {
+    return "Supabase connection requires sslmode=require in DATABASE_URL";
+  }
+  return "Database error — see server logs for details";
+}
+
 export function toErrorResponse(error: unknown): {
   error: {
     code: string;
@@ -78,6 +109,18 @@ export function toErrorResponse(error: unknown): {
         details: error.details,
       },
       statusCode: error.statusCode,
+    };
+  }
+
+  if (isPrismaError(error)) {
+    const reasonCode = prismaReasonCode(error);
+    return {
+      error: {
+        code: "DATABASE_ERROR",
+        message: safePrismaMessage(error),
+        reasonCode,
+      },
+      statusCode: 503,
     };
   }
 

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ModeResponse } from "@/lib/types";
+import { formatApiError, parseApiError } from "@/lib/utils/api-error";
 
 const MODE_LABELS: Record<ModeResponse["current_mode"], string> = {
   paper: "Paper Mode",
@@ -21,7 +22,10 @@ export function ModeSelector() {
   const fetchMode = useCallback(async () => {
     try {
       const res = await fetch("/api/mode");
-      if (!res.ok) throw new Error("Failed to load mode");
+      if (!res.ok) {
+        const apiErr = await parseApiError(res);
+        throw new Error(formatApiError(apiErr, "Mode unavailable"));
+      }
       const data = (await res.json()) as ModeResponse;
       setMode(data);
       setError(null);

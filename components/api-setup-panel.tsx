@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import type { ProviderCredentialPublic } from "@/lib/vault/types";
+import { formatApiError, parseApiError } from "@/lib/utils/api-error";
 
 interface ProviderMeta {
   id: string;
@@ -39,7 +40,10 @@ export function ApiSetupPanel() {
   const fetchVault = useCallback(async () => {
     try {
       const res = await fetch("/api/vault");
-      if (!res.ok) throw new Error("Failed to load vault");
+      if (!res.ok) {
+        const apiErr = await parseApiError(res);
+        throw new Error(formatApiError(apiErr, "API vault unavailable"));
+      }
       setVault(await res.json());
       setError(null);
     } catch (err) {
