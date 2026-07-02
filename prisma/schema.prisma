@@ -1,0 +1,1260 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Identity & Accounts ───────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  exchangeAccounts ExchangeAccount[]
+  modeState        ModeState?
+  auditLogs        AuditLog[]
+  alerts           Alert[]
+  providerCredentials ProviderCredential[]
+
+  @@map("users")
+}
+
+model ExchangeAccount {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  venueId   String   @map("venue_id")
+  label     String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  venue           Venue             @relation(fields: [venueId], references: [id])
+  encryptedApiKey EncryptedApiKey?
+  permissions     ApiKeyPermission[]
+  orders          Order[]
+  positions       Position[]
+  paperOrders     PaperOrder[]
+
+  @@index([userId])
+  @@index([venueId])
+  @@map("exchange_accounts")
+}
+
+model EncryptedApiKey {
+  id                String   @id @default(cuid())
+  exchangeAccountId String   @unique @map("exchange_account_id")
+  encryptedKey      String   @map("encrypted_key")
+  encryptedSecret   String   @map("encrypted_secret")
+  keyVersion        Int      @default(1) @map("key_version")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  exchangeAccount ExchangeAccount @relation(fields: [exchangeAccountId], references: [id], onDelete: Cascade)
+
+  @@map("encrypted_api_keys")
+}
+
+model ApiKeyPermission {
+  id                String   @id @default(cuid())
+  exchangeAccountId String   @map("exchange_account_id")
+  canRead           Boolean  @default(true) @map("can_read")
+  canTrade          Boolean  @default(false) @map("can_trade")
+  canWithdraw       Boolean  @default(false) @map("can_withdraw")
+  verifiedAt        DateTime? @map("verified_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  exchangeAccount ExchangeAccount @relation(fields: [exchangeAccountId], references: [id], onDelete: Cascade)
+
+  @@map("api_key_permissions")
+}
+
+// ─── Mode State ──────────────────────────────────────────────────────────────
+
+enum TradingMode {
+  PAPER
+  MANUAL
+  AUTO
+}
+
+enum AutoState {
+  LOCKED
+  READY
+  PAUSED
+  EMERGENCY_STOP
+}
+
+model ModeState {
+  id                    String      @id @default(cuid())
+  userId                String      @unique @map("user_id")
+  currentMode           TradingMode @default(PAPER) @map("current_mode")
+  paperEnabled          Boolean     @default(true) @map("paper_enabled")
+  manualEnabled         Boolean     @default(true) @map("manual_enabled")
+  autoVisible           Boolean     @default(true) @map("auto_visible")
+  autoSelected          Boolean     @default(false) @map("auto_selected")
+  autoExecutionEnabled  Boolean     @default(false) @map("auto_execution_enabled")
+  autoBlockedReason     String?     @map("auto_blocked_reason")
+  autoState             AutoState   @default(LOCKED) @map("auto_state")
+  emergencyPaused       Boolean     @default(false) @map("emergency_paused")
+  lastChangedAt         DateTime    @default(now()) @map("last_changed_at")
+  lastChangedBy         String?     @map("last_changed_by")
+  createdAt             DateTime    @default(now()) @map("created_at")
+  updatedAt             DateTime    @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("mode_state")
+}
+
+// ─── Market Data ─────────────────────────────────────────────────────────────
+
+model Asset {
+  id        String   @id @default(cuid())
+  symbol    String   @unique
+  baseAsset String   @map("base_asset")
+  quoteAsset String  @map("quote_asset")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  candles          Candle[]
+  marketSnapshots  MarketSnapshot[]
+  orderBooks       OrderBook[]
+  signals          Signal[]
+  shadowTrades     ShadowTrade[]
+  paperTrades      PaperTrade[]
+  tradeCards       TradeCard[]
+
+  @@map("assets")
+}
+
+model Venue {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  exchangeAccounts ExchangeAccount[]
+  marketSnapshots  MarketSnapshot[]
+  orderBooks       OrderBook[]
+  candles          Candle[]
+  orders           Order[]
+  fills            Fill[]
+
+  @@map("venues")
+}
+
+model MarketSnapshot {
+  id        String   @id @default(cuid())
+  assetId   String   @map("asset_id")
+  venueId   String   @map("venue_id")
+  bid       Decimal  @db.Decimal(24, 12)
+  ask       Decimal  @db.Decimal(24, 12)
+  last      Decimal  @db.Decimal(24, 12)
+  volume24h Decimal  @map("volume_24h") @db.Decimal(24, 12)
+  timestamp DateTime
+  createdAt DateTime @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id])
+  venue Venue @relation(fields: [venueId], references: [id])
+
+  @@index([assetId, venueId, timestamp])
+  @@map("market_snapshots")
+}
+
+model OrderBook {
+  id        String   @id @default(cuid())
+  assetId   String   @map("asset_id")
+  venueId   String   @map("venue_id")
+  bids      Json
+  asks      Json
+  timestamp DateTime
+  createdAt DateTime @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id])
+  venue Venue @relation(fields: [venueId], references: [id])
+
+  @@index([assetId, venueId, timestamp])
+  @@map("order_books")
+}
+
+model Candle {
+  id        String   @id @default(cuid())
+  assetId   String   @map("asset_id")
+  venueId   String   @map("venue_id")
+  timeframe String
+  open      Decimal  @db.Decimal(24, 12)
+  high      Decimal  @db.Decimal(24, 12)
+  low       Decimal  @db.Decimal(24, 12)
+  close     Decimal  @db.Decimal(24, 12)
+  volume    Decimal  @db.Decimal(24, 12)
+  timestamp DateTime
+  createdAt DateTime @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id])
+  venue Venue @relation(fields: [venueId], references: [id])
+
+  @@unique([assetId, venueId, timeframe, timestamp])
+  @@index([assetId, venueId, timeframe, timestamp])
+  @@map("candles")
+}
+
+model Feature {
+  id          String   @id @default(cuid())
+  assetId     String?  @map("asset_id")
+  name        String
+  version     String
+  value       Json
+  computedAt  DateTime @map("computed_at")
+  dataSource  String   @map("data_source")
+  assumptions Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([name, version, computedAt])
+  @@map("features")
+}
+
+model MarketRegime {
+  id          String   @id @default(cuid())
+  label       String
+  version     String
+  confidence  Decimal? @db.Decimal(8, 6)
+  features    Json
+  detectedAt  DateTime @map("detected_at")
+  dataSource  String   @map("data_source")
+  assumptions Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([detectedAt])
+  @@map("market_regimes")
+}
+
+// ─── Strategy Library ────────────────────────────────────────────────────────
+
+model StrategyLibrary {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  category    String
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  variants StrategyVariant[]
+
+  @@map("strategy_library")
+}
+
+model StrategyVariant {
+  id           String   @id @default(cuid())
+  libraryId    String   @map("library_id")
+  version      String
+  name         String
+  description  String?
+  logicHash    String   @map("logic_hash")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  library            StrategyLibrary          @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  backtests          StrategyBacktest[]
+  proofGates         StrategyProofGate[]
+  performance        StrategyPerformance[]
+  forwardTests       StrategyForwardTest[]
+  liveCanaries       StrategyLiveCanary[]
+  parameterSets      ParameterSet[]
+  signals            Signal[]
+  shadowTrades       ShadowTrade[]
+  paperTrades        PaperTrade[]
+  tradeCards         TradeCard[]
+  promotionEvents    StrategyPromotionEvent[]
+  demotionEvents     StrategyDemotionEvent[]
+  cooldownEvents     StrategyCooldownEvent[]
+
+  @@unique([libraryId, version])
+  @@index([libraryId, version])
+  @@map("strategy_variants")
+}
+
+model StrategyBacktest {
+  id               String   @id @default(cuid())
+  variantId        String   @map("variant_id")
+  version          String
+  dataSource       String   @map("data_source")
+  timeframe        String
+  startDate        DateTime @map("start_date")
+  endDate          DateTime @map("end_date")
+  assumptions      Json
+  feeModel         Json     @map("fee_model")
+  slippageModel    Json     @map("slippage_model")
+  results          Json
+  netProfit        Decimal? @map("net_profit") @db.Decimal(24, 12)
+  expectancy       Decimal? @db.Decimal(24, 12)
+  maxDrawdown      Decimal? @map("max_drawdown") @db.Decimal(24, 12)
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([variantId, createdAt])
+  @@map("strategy_backtests")
+}
+
+model StrategyProofGate {
+  id          String    @id @default(cuid())
+  variantId   String    @map("variant_id")
+  gateName    String    @map("gate_name")
+  gateVersion String    @map("gate_version")
+  status      String
+  reasonCode  String?   @map("reason_code")
+  evidence    Json?
+  evaluatedAt DateTime  @map("evaluated_at")
+  expiresAt   DateTime? @map("expires_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([variantId, gateName])
+  @@map("strategy_proof_gates")
+}
+
+model StrategyPerformance {
+  id              String   @id @default(cuid())
+  variantId       String   @map("variant_id")
+  period          String
+  dataSource      String   @map("data_source")
+  netProfit       Decimal  @map("net_profit") @db.Decimal(24, 12)
+  grossProfit     Decimal  @map("gross_profit") @db.Decimal(24, 12)
+  fees            Decimal  @db.Decimal(24, 12)
+  slippage        Decimal  @db.Decimal(24, 12)
+  winRate         Decimal? @map("win_rate") @db.Decimal(8, 6)
+  expectancy      Decimal? @db.Decimal(24, 12)
+  sharpeRatio     Decimal? @map("sharpe_ratio") @db.Decimal(12, 6)
+  maxDrawdown     Decimal? @map("max_drawdown") @db.Decimal(24, 12)
+  tradeCount      Int      @map("trade_count")
+  assumptions     Json
+  calculatedAt    DateTime @map("calculated_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([variantId, period])
+  @@map("strategy_performance")
+}
+
+model StrategyForwardTest {
+  id           String   @id @default(cuid())
+  variantId    String   @map("variant_id")
+  startDate    DateTime @map("start_date")
+  endDate      DateTime? @map("end_date")
+  dataSource   String   @map("data_source")
+  assumptions  Json
+  feeModel     Json     @map("fee_model")
+  slippageModel Json    @map("slippage_model")
+  results      Json
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("strategy_forward_tests")
+}
+
+model StrategyLiveCanary {
+  id           String    @id @default(cuid())
+  variantId    String    @map("variant_id")
+  startDate    DateTime  @map("start_date")
+  endDate      DateTime? @map("end_date")
+  maxSize      Decimal   @map("max_size") @db.Decimal(24, 12)
+  status       String
+  results      Json?
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("strategy_live_canaries")
+}
+
+model ParameterSet {
+  id          String   @id @default(cuid())
+  variantId   String   @map("variant_id")
+  version     String
+  parameters  Json
+  logicHash   String   @map("logic_hash")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdBy   String?  @map("created_by")
+  reversible  Boolean  @default(true)
+
+  variant      StrategyVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  tests        ParameterTest[]
+
+  @@unique([variantId, version])
+  @@map("parameter_sets")
+}
+
+model ParameterTest {
+  id              String   @id @default(cuid())
+  parameterSetId  String   @map("parameter_set_id")
+  testType        String   @map("test_type")
+  dataSource      String   @map("data_source")
+  assumptions     Json
+  feeModel        Json     @map("fee_model")
+  slippageModel   Json     @map("slippage_model")
+  results         Json
+  status          String
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  parameterSet ParameterSet @relation(fields: [parameterSetId], references: [id], onDelete: Cascade)
+
+  @@map("parameter_tests")
+}
+
+// ─── Research & Alpha ────────────────────────────────────────────────────────
+
+model AlphaResearchResult {
+  id           String   @id @default(cuid())
+  name         String
+  version      String
+  dataSource   String   @map("data_source")
+  timeframe    String
+  assumptions  Json
+  feeModel     Json     @map("fee_model")
+  slippageModel Json    @map("slippage_model")
+  results      Json
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([name, version])
+  @@map("alpha_research_results")
+}
+
+model EdgeDiscoveryRun {
+  id          String   @id @default(cuid())
+  name        String
+  version     String
+  dataSource  String   @map("data_source")
+  assumptions Json
+  results     Json
+  status      String
+  startedAt   DateTime @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("edge_discovery_runs")
+}
+
+model BenchmarkAlphaResult {
+  id           String   @id @default(cuid())
+  strategyRef  String   @map("strategy_ref")
+  benchmarkRef String   @map("benchmark_ref")
+  dataSource   String   @map("data_source")
+  timeframe    String
+  alpha        Decimal? @db.Decimal(24, 12)
+  beta         Decimal? @db.Decimal(12, 6)
+  assumptions  Json
+  calculatedAt DateTime @map("calculated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("benchmark_alpha_results")
+}
+
+model MonteCarloTest {
+  id           String   @id @default(cuid())
+  strategyRef  String   @map("strategy_ref")
+  iterations   Int
+  dataSource   String   @map("data_source")
+  assumptions  Json
+  feeModel     Json     @map("fee_model")
+  slippageModel Json    @map("slippage_model")
+  results      Json
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("monte_carlo_tests")
+}
+
+model WalkForwardTest {
+  id           String   @id @default(cuid())
+  strategyRef  String   @map("strategy_ref")
+  folds        Int
+  dataSource   String   @map("data_source")
+  assumptions  Json
+  feeModel     Json     @map("fee_model")
+  slippageModel Json    @map("slippage_model")
+  results      Json
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("walk_forward_tests")
+}
+
+model AdversarialMarketTest {
+  id           String   @id @default(cuid())
+  strategyRef  String   @map("strategy_ref")
+  scenario     String
+  dataSource   String   @map("data_source")
+  assumptions  Json
+  results      Json
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("adversarial_market_tests")
+}
+
+model MarketMicrostructureTest {
+  id           String   @id @default(cuid())
+  strategyRef  String   @map("strategy_ref")
+  venueRef     String   @map("venue_ref")
+  dataSource   String   @map("data_source")
+  assumptions  Json
+  results      Json
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("market_microstructure_tests")
+}
+
+// ─── Signals & Trades ────────────────────────────────────────────────────────
+
+model Signal {
+  id          String   @id @default(cuid())
+  variantId   String   @map("variant_id")
+  assetId     String   @map("asset_id")
+  direction   String
+  strength    Decimal? @db.Decimal(8, 6)
+  reasonCodes Json     @map("reason_codes")
+  metadata    Json?
+  generatedAt DateTime @map("generated_at")
+  expiresAt   DateTime? @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id])
+  asset   Asset           @relation(fields: [assetId], references: [id])
+
+  @@index([variantId, generatedAt])
+  @@map("signals")
+}
+
+model ShadowTrade {
+  id           String   @id @default(cuid())
+  variantId    String   @map("variant_id")
+  assetId      String   @map("asset_id")
+  direction    String
+  entryPrice   Decimal  @map("entry_price") @db.Decimal(24, 12)
+  exitPrice    Decimal? @map("exit_price") @db.Decimal(24, 12)
+  size         Decimal  @db.Decimal(24, 12)
+  status       String
+  assumptions  Json
+  feeModel     Json     @map("fee_model")
+  slippageModel Json    @map("slippage_model")
+  pnl          Decimal? @db.Decimal(24, 12)
+  reasonCodes  Json     @map("reason_codes")
+  openedAt     DateTime @map("opened_at")
+  closedAt     DateTime? @map("closed_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id])
+  asset   Asset           @relation(fields: [assetId], references: [id])
+
+  @@map("shadow_trades")
+}
+
+model PaperTrade {
+  id           String   @id @default(cuid())
+  variantId    String   @map("variant_id")
+  assetId      String   @map("asset_id")
+  direction    String
+  entryPrice   Decimal  @map("entry_price") @db.Decimal(24, 12)
+  exitPrice    Decimal? @map("exit_price") @db.Decimal(24, 12)
+  size         Decimal  @db.Decimal(24, 12)
+  leverage     Decimal? @db.Decimal(8, 4)
+  status       String
+  assumptions  Json
+  feeModel     Json     @map("fee_model")
+  slippageModel Json    @map("slippage_model")
+  fundingCost  Decimal? @map("funding_cost") @db.Decimal(24, 12)
+  pnl          Decimal? @db.Decimal(24, 12)
+  reasonCodes  Json     @map("reason_codes")
+  openedAt     DateTime @map("opened_at")
+  closedAt     DateTime? @map("closed_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id])
+  asset   Asset           @relation(fields: [assetId], references: [id])
+
+  @@map("paper_trades")
+}
+
+model TradeCard {
+  id           String   @id @default(cuid())
+  variantId    String   @map("variant_id")
+  assetId      String   @map("asset_id")
+  direction    String
+  entryZone    Json     @map("entry_zone")
+  stopLoss     Decimal  @map("stop_loss") @db.Decimal(24, 12)
+  takeProfit   Decimal? @map("take_profit") @db.Decimal(24, 12)
+  size         Decimal? @db.Decimal(24, 12)
+  leverage     Decimal? @db.Decimal(8, 4)
+  quality      String
+  reasonCodes  Json     @map("reason_codes")
+  explanation  String
+  status       String   @default("ACTIVE")
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  variant     StrategyVariant   @relation(fields: [variantId], references: [id])
+  asset       Asset             @relation(fields: [assetId], references: [id])
+  permissions TradePermission[]
+
+  @@index([status, createdAt])
+  @@map("trade_cards")
+}
+
+model TradePermission {
+  id           String   @id @default(cuid())
+  tradeCardId  String?  @map("trade_card_id")
+  decision     String
+  reasonCode   String   @map("reason_code")
+  reasonDetail String?  @map("reason_detail")
+  gatesPassed  Json?    @map("gates_passed")
+  gatesFailed  Json?    @map("gates_failed")
+  evaluatedAt  DateTime @map("evaluated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tradeCard TradeCard? @relation(fields: [tradeCardId], references: [id])
+
+  @@index([decision, evaluatedAt])
+  @@map("trade_permissions")
+}
+
+// ─── Positions, Orders, Fills ────────────────────────────────────────────────
+
+model Position {
+  id                String   @id @default(cuid())
+  exchangeAccountId String   @map("exchange_account_id")
+  assetSymbol       String   @map("asset_symbol")
+  direction         String
+  size              Decimal  @db.Decimal(24, 12)
+  entryPrice        Decimal  @map("entry_price") @db.Decimal(24, 12)
+  markPrice         Decimal? @map("mark_price") @db.Decimal(24, 12)
+  unrealizedPnl     Decimal? @map("unrealized_pnl") @db.Decimal(24, 12)
+  leverage          Decimal? @db.Decimal(8, 4)
+  status            String
+  openedAt          DateTime @map("opened_at")
+  closedAt          DateTime? @map("closed_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  exchangeAccount ExchangeAccount @relation(fields: [exchangeAccountId], references: [id])
+
+  @@index([exchangeAccountId, status])
+  @@map("positions")
+}
+
+model Order {
+  id                String   @id @default(cuid())
+  exchangeAccountId String   @map("exchange_account_id")
+  venueId           String   @map("venue_id")
+  externalId        String?  @map("external_id")
+  assetSymbol       String   @map("asset_symbol")
+  side              String
+  type              String
+  size              Decimal  @db.Decimal(24, 12)
+  price             Decimal? @db.Decimal(24, 12)
+  status            String
+  reasonCode        String?  @map("reason_code")
+  submittedAt       DateTime @map("submitted_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  exchangeAccount ExchangeAccount @relation(fields: [exchangeAccountId], references: [id])
+  venue           Venue           @relation(fields: [venueId], references: [id])
+  fills           Fill[]
+
+  @@index([exchangeAccountId, status])
+  @@map("orders")
+}
+
+model Fill {
+  id         String   @id @default(cuid())
+  orderId    String   @map("order_id")
+  venueId    String   @map("venue_id")
+  externalId String?  @map("external_id")
+  price      Decimal  @db.Decimal(24, 12)
+  size       Decimal  @db.Decimal(24, 12)
+  fee        Decimal  @db.Decimal(24, 12)
+  feeAsset   String   @map("fee_asset")
+  slippage   Decimal? @db.Decimal(24, 12)
+  filledAt   DateTime @map("filled_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  venue Venue @relation(fields: [venueId], references: [id])
+
+  @@index([orderId])
+  @@map("fills")
+}
+
+model TradeHistory {
+  id           String   @id @default(cuid())
+  mode         TradingMode
+  assetSymbol  String   @map("asset_symbol")
+  direction    String
+  entryPrice   Decimal  @map("entry_price") @db.Decimal(24, 12)
+  exitPrice    Decimal  @map("exit_price") @db.Decimal(24, 12)
+  size         Decimal  @db.Decimal(24, 12)
+  grossPnl     Decimal  @map("gross_pnl") @db.Decimal(24, 12)
+  fees         Decimal  @db.Decimal(24, 12)
+  slippage     Decimal  @db.Decimal(24, 12)
+  funding      Decimal  @db.Decimal(24, 12)
+  netPnl       Decimal  @map("net_pnl") @db.Decimal(24, 12)
+  reasonCodes  Json     @map("reason_codes")
+  openedAt     DateTime @map("opened_at")
+  closedAt     DateTime @map("closed_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([mode, closedAt])
+  @@map("trade_history")
+}
+
+model PaperOrder {
+  id                String   @id @default(cuid())
+  exchangeAccountId String?  @map("exchange_account_id")
+  assetSymbol       String   @map("asset_symbol")
+  side              String
+  type              String
+  size              Decimal  @db.Decimal(24, 12)
+  price             Decimal? @db.Decimal(24, 12)
+  status            String
+  simulatedLatencyMs Int?    @map("simulated_latency_ms")
+  reasonCode        String?  @map("reason_code")
+  submittedAt       DateTime @map("submitted_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  exchangeAccount ExchangeAccount? @relation(fields: [exchangeAccountId], references: [id])
+  fills           PaperFill[]
+
+  @@map("paper_orders")
+}
+
+model PaperFill {
+  id              String   @id @default(cuid())
+  paperOrderId    String   @map("paper_order_id")
+  price           Decimal  @db.Decimal(24, 12)
+  size            Decimal  @db.Decimal(24, 12)
+  fee             Decimal  @db.Decimal(24, 12)
+  slippage        Decimal  @db.Decimal(24, 12)
+  isPartial       Boolean  @default(false) @map("is_partial")
+  isMissed        Boolean  @default(false) @map("is_missed")
+  simulatedAt     DateTime @map("simulated_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  paperOrder PaperOrder @relation(fields: [paperOrderId], references: [id], onDelete: Cascade)
+
+  @@map("paper_fills")
+}
+
+// ─── Risk & Safety Events ────────────────────────────────────────────────────
+
+model RiskEvent {
+  id          String   @id @default(cuid())
+  eventType   String   @map("event_type")
+  severity    String
+  reasonCode  String   @map("reason_code")
+  detail      Json?
+  occurredAt  DateTime @map("occurred_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([eventType, occurredAt])
+  @@map("risk_events")
+}
+
+model RiskOfRuinEvent {
+  id           String   @id @default(cuid())
+  probability  Decimal  @db.Decimal(8, 6)
+  horizon      String
+  assumptions  Json
+  reasonCode   String   @map("reason_code")
+  calculatedAt DateTime @map("calculated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("risk_of_ruin_events")
+}
+
+model KillSwitchEvent {
+  id         String   @id @default(cuid())
+  trigger    String
+  reasonCode String   @map("reason_code")
+  detail     Json?
+  activatedAt DateTime @map("activated_at")
+  resolvedAt DateTime? @map("resolved_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("kill_switch_events")
+}
+
+model StrategyCooldownEvent {
+  id         String    @id @default(cuid())
+  variantId  String    @map("variant_id")
+  reasonCode String    @map("reason_code")
+  detail     Json?
+  startedAt  DateTime  @map("started_at")
+  endsAt     DateTime? @map("ends_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id])
+
+  @@map("strategy_cooldown_events")
+}
+
+model StrategyPromotionEvent {
+  id         String   @id @default(cuid())
+  variantId  String   @map("variant_id")
+  fromLevel  String   @map("from_level")
+  toLevel    String   @map("to_level")
+  reasonCode String   @map("reason_code")
+  evidence   Json?
+  promotedAt DateTime @map("promoted_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id])
+
+  @@map("strategy_promotion_events")
+}
+
+model StrategyDemotionEvent {
+  id         String   @id @default(cuid())
+  variantId  String   @map("variant_id")
+  fromLevel  String   @map("from_level")
+  toLevel    String   @map("to_level")
+  reasonCode String   @map("reason_code")
+  evidence   Json?
+  demotedAt  DateTime @map("demoted_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  variant StrategyVariant @relation(fields: [variantId], references: [id])
+
+  @@map("strategy_demotion_events")
+}
+
+model LiveDriftEvent {
+  id         String   @id @default(cuid())
+  variantId  String?  @map("variant_id")
+  metric     String
+  expected   Decimal  @db.Decimal(24, 12)
+  observed   Decimal  @db.Decimal(24, 12)
+  driftPct   Decimal  @map("drift_pct") @db.Decimal(8, 6)
+  reasonCode String   @map("reason_code")
+  detectedAt DateTime @map("detected_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("live_drift_events")
+}
+
+model EdgeDecayEvent {
+  id         String   @id @default(cuid())
+  variantId  String?  @map("variant_id")
+  metric     String
+  priorValue Decimal  @map("prior_value") @db.Decimal(24, 12)
+  currentValue Decimal @map("current_value") @db.Decimal(24, 12)
+  reasonCode String   @map("reason_code")
+  detectedAt DateTime @map("detected_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("edge_decay_events")
+}
+
+model ExecutionQualityEvent {
+  id           String   @id @default(cuid())
+  orderRef     String?  @map("order_ref")
+  metric       String
+  expected     Decimal  @db.Decimal(24, 12)
+  observed     Decimal  @db.Decimal(24, 12)
+  reasonCode   String   @map("reason_code")
+  occurredAt   DateTime @map("occurred_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("execution_quality_events")
+}
+
+model ExchangeFailureEvent {
+  id         String   @id @default(cuid())
+  venueRef   String   @map("venue_ref")
+  failureType String  @map("failure_type")
+  reasonCode String   @map("reason_code")
+  detail     Json?
+  occurredAt DateTime @map("occurred_at")
+  resolvedAt DateTime? @map("resolved_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("exchange_failure_events")
+}
+
+model VenueRoutingDecision {
+  id           String   @id @default(cuid())
+  assetSymbol  String   @map("asset_symbol")
+  selectedVenue String  @map("selected_venue")
+  candidates   Json
+  reasonCode   String   @map("reason_code")
+  decidedAt    DateTime @map("decided_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("venue_routing_decisions")
+}
+
+model LiquidityUniverseSnapshot {
+  id          String   @id @default(cuid())
+  universe    Json
+  filters     Json
+  dataSource  String   @map("data_source")
+  capturedAt  DateTime @map("captured_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("liquidity_universe_snapshots")
+}
+
+model OpportunityCostEvent {
+  id           String   @id @default(cuid())
+  missedSetup  String   @map("missed_setup")
+  estimatedEdge Decimal? @map("estimated_edge") @db.Decimal(24, 12)
+  reasonCode   String   @map("reason_code")
+  occurredAt   DateTime @map("occurred_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("opportunity_cost_events")
+}
+
+model CapitalAllocationDecision {
+  id           String   @id @default(cuid())
+  strategyRef  String   @map("strategy_ref")
+  allocatedPct Decimal  @map("allocated_pct") @db.Decimal(8, 6)
+  reasonCode   String   @map("reason_code")
+  constraints  Json?
+  decidedAt    DateTime @map("decided_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("capital_allocation_decisions")
+}
+
+model ProfitDensityEvent {
+  id           String   @id @default(cuid())
+  period       String
+  profitPerHour Decimal @map("profit_per_hour") @db.Decimal(24, 12)
+  tradeCount   Int      @map("trade_count")
+  calculatedAt DateTime @map("calculated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("profit_density_events")
+}
+
+model ProfitLockEvent {
+  id         String   @id @default(cuid())
+  amount     Decimal  @db.Decimal(24, 12)
+  reasonCode String   @map("reason_code")
+  lockedAt   DateTime @map("locked_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("profit_lock_events")
+}
+
+model CompoundingEvent {
+  id           String   @id @default(cuid())
+  priorCapital Decimal  @map("prior_capital") @db.Decimal(24, 12)
+  newCapital   Decimal  @map("new_capital") @db.Decimal(24, 12)
+  reasonCode   String   @map("reason_code")
+  evidence     Json?
+  appliedAt    DateTime @map("applied_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("compounding_events")
+}
+
+// ─── Evidence & Proof ────────────────────────────────────────────────────────
+
+model EvidenceLevel {
+  id          String   @id @default(cuid())
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id")
+  level       String
+  reasonCode  String   @map("reason_code")
+  evidence    Json?
+  assessedAt  DateTime @map("assessed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@map("evidence_levels")
+}
+
+model LiveProfitabilityAudit {
+  id           String   @id @default(cuid())
+  period       String
+  netProfit    Decimal  @map("net_profit") @db.Decimal(24, 12)
+  tradeCount   Int      @map("trade_count")
+  assumptions  Json
+  status       String
+  auditedAt    DateTime @map("audited_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("live_profitability_audits")
+}
+
+model LiveSampleSizeAudit {
+  id           String   @id @default(cuid())
+  strategyRef  String   @map("strategy_ref")
+  sampleSize   Int      @map("sample_size")
+  requiredSize Int      @map("required_size")
+  status       String
+  reasonCode   String   @map("reason_code")
+  auditedAt    DateTime @map("audited_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("live_sample_size_audits")
+}
+
+model CanaryScalingEvent {
+  id           String   @id @default(cuid())
+  variantId    String?  @map("variant_id")
+  fromSize     Decimal  @map("from_size") @db.Decimal(24, 12)
+  toSize       Decimal  @map("to_size") @db.Decimal(24, 12)
+  reasonCode   String   @map("reason_code")
+  evidence     Json?
+  scaledAt     DateTime @map("scaled_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("canary_scaling_events")
+}
+
+model ReconciliationEvent {
+  id           String   @id @default(cuid())
+  entityType   String   @map("entity_type")
+  entityId     String   @map("entity_id")
+  expected     Json
+  observed     Json
+  discrepancy  Json?
+  status       String
+  reasonCode   String   @map("reason_code")
+  reconciledAt DateTime @map("reconciled_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("reconciliation_events")
+}
+
+// ─── Reports ─────────────────────────────────────────────────────────────────
+
+model ProfitAttributionReport {
+  id           String   @id @default(cuid())
+  period       String
+  attributions Json
+  netProfit    Decimal  @map("net_profit") @db.Decimal(24, 12)
+  generatedAt  DateTime @map("generated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("profit_attribution_reports")
+}
+
+model ProductionProfitabilityReport {
+  id           String   @id @default(cuid())
+  period       String
+  metrics      Json
+  netProfit    Decimal  @map("net_profit") @db.Decimal(24, 12)
+  status       String
+  generatedAt  DateTime @map("generated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("production_profitability_reports")
+}
+
+model TodayMarketProofReport {
+  id           String   @id @default(cuid())
+  reportDate   DateTime @map("report_date") @db.Date
+  dataQuality  Json     @map("data_quality")
+  marketQuality Json    @map("market_quality")
+  verdict      String
+  reasonCodes  Json     @map("reason_codes")
+  generatedAt  DateTime @map("generated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([reportDate])
+  @@map("today_market_proof_reports")
+}
+
+model TodayAlphaBetaReport {
+  id           String   @id @default(cuid())
+  reportDate   DateTime @map("report_date") @db.Date
+  alpha        Decimal? @db.Decimal(24, 12)
+  beta         Decimal? @db.Decimal(12, 6)
+  benchmark    String
+  metrics      Json
+  generatedAt  DateTime @map("generated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([reportDate])
+  @@map("today_alpha_beta_reports")
+}
+
+model TodayGoNoGoDecision {
+  id           String   @id @default(cuid())
+  reportDate   DateTime @map("report_date") @db.Date
+  decision     String
+  reasonCodes  Json     @map("reason_codes")
+  gatesPassed  Json?    @map("gates_passed")
+  gatesFailed  Json?    @map("gates_failed")
+  decidedAt    DateTime @map("decided_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([reportDate])
+  @@map("today_go_no_go_decisions")
+}
+
+model ProfitabilityScorecard {
+  id           String   @id @default(cuid())
+  period       String
+  scorecard    Json
+  overallScore Decimal? @map("overall_score") @db.Decimal(8, 4)
+  status       String
+  generatedAt  DateTime @map("generated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("profitability_scorecards")
+}
+
+model MoneyProtectedEvent {
+  id           String   @id @default(cuid())
+  amount       Decimal  @db.Decimal(24, 12)
+  protectionType String @map("protection_type")
+  reasonCode   String   @map("reason_code")
+  detail       Json?
+  occurredAt   DateTime @map("occurred_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("money_protected_events")
+}
+
+// ─── Audit & Alerts ──────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  reasonCode String?  @map("reason_code")
+  detail     Json?
+  ipAddress  String?  @map("ip_address")
+  occurredAt DateTime @map("occurred_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([action, occurredAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+model Alert {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  severity   String
+  category   String
+  title      String
+  message    String
+  reasonCode String   @map("reason_code")
+  isRead     Boolean  @default(false) @map("is_read")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead, createdAt])
+  @@map("alerts")
+}
+
+// ─── API Vault (Prompt 2) ────────────────────────────────────────────────────
+
+enum ProviderType {
+  KRAKEN
+  COINBASE_ADVANCED
+  BINANCE
+  BINANCE_US
+  BYBIT
+  COINGECKO
+  DEX_SCREENER
+  GECKOTERMINAL
+  GOPLUS
+}
+
+enum EncryptionMethod {
+  DEV_AES256_GCM
+  AES256_GCM
+}
+
+enum ProviderKeyStatus {
+  ACTIVE
+  DISABLED
+  EMERGENCY_DISABLED
+  BLOCKED_WITHDRAWAL
+  PERMISSION_UNKNOWN
+}
+
+model ProviderCredential {
+  id                      String            @id @default(cuid())
+  userId                  String            @map("user_id")
+  provider                ProviderType
+  label                   String
+  encryptedKey            String            @map("encrypted_key")
+  encryptedSecret         String?           @map("encrypted_secret")
+  encryptedPassphrase     String?           @map("encrypted_passphrase")
+  keyVersion              Int               @default(1) @map("key_version")
+  encryptionMethod        EncryptionMethod  @default(DEV_AES256_GCM) @map("encryption_method")
+  status                  ProviderKeyStatus @default(ACTIVE)
+  disabledReason          String?           @map("disabled_reason")
+  ipWhitelistRecommended  Boolean           @default(true) @map("ip_whitelist_recommended")
+  ipWhitelistConfigured   Boolean           @default(false) @map("ip_whitelist_configured")
+  permissionsMetadata     Json?             @map("permissions_metadata")
+  canRead                 Boolean           @default(true) @map("can_read")
+  canTrade                Boolean           @default(false) @map("can_trade")
+  canWithdraw             Boolean           @default(false) @map("can_withdraw")
+  permissionDetected      Boolean           @default(false) @map("permission_detected")
+  permissionReasonCode    String?           @map("permission_reason_code")
+  lastConnectionTestAt    DateTime?         @map("last_connection_test_at")
+  lastConnectionStatus    String?           @map("last_connection_status")
+  lastHealthCheckAt       DateTime?         @map("last_health_check_at")
+  lastHealthStatus        String?           @map("last_health_status")
+  lastLatencyMs           Int?              @map("last_latency_ms")
+  createdAt               DateTime          @default(now()) @map("created_at")
+  updatedAt               DateTime          @updatedAt @map("updated_at")
+
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  healthLogs  ProviderHealthLog[]
+
+  @@index([userId, provider])
+  @@index([status])
+  @@map("provider_credentials")
+}
+
+model ProviderHealthLog {
+  id           String   @id @default(cuid())
+  credentialId String   @map("credential_id")
+  status       String
+  latencyMs    Int?     @map("latency_ms")
+  reasonCode   String?  @map("reason_code")
+  detail       Json?
+  checkedAt    DateTime @map("checked_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  credential ProviderCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@index([credentialId, checkedAt])
+  @@map("provider_health_logs")
+}
