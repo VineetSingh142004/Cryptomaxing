@@ -66,6 +66,33 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000)
 
+## ENCRYPTION_KEY (API Vault)
+
+Before storing **real** exchange API keys, set a production-safe encryption key in `.env`:
+
+```bash
+# macOS / Linux / Git Bash
+openssl rand -base64 32
+```
+
+```powershell
+# Windows PowerShell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
+```
+
+Add to `.env`:
+
+```env
+ENCRYPTION_KEY=<paste output here>
+```
+
+**Rules:**
+- Must be base64 decoding to **32+ bytes**
+- Never commit or expose to the frontend
+- Restart `npm run dev` after changing `.env`
+- Without it: dev uses unsafe fallback; **vault writes are blocked**
+- User authentication is **NOT implemented** — vault writes stay blocked until auth exists
+
 ## API
 
 ### Health

@@ -31,6 +31,15 @@ interface DashboardData {
   readiness: { passed: number; failed: number; partial: number };
   workers: { total: number; defined: number; not_implemented: number };
   disclaimers: string[];
+  next_steps?: string[];
+  auth?: { implemented: boolean; status: string };
+  encryption?: {
+    production_safe: boolean;
+    vault_writes_allowed: boolean;
+    block_reasons: string[];
+    warning: string | null;
+  };
+  paper_mode?: { safe_to_test: boolean; places_real_orders: boolean; note: string };
 }
 
 export function DashboardShell() {
@@ -129,6 +138,31 @@ export function DashboardShell() {
             </CardContent>
           </Card>
         </div>
+
+        {data?.next_steps && (
+          <Card className="border-primary/30">
+            <CardHeader>
+              <CardTitle>Next Steps (Safe Path)</CardTitle>
+              <CardDescription>What to do before any live trading or real API keys</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              {data.auth && !data.auth.implemented && (
+                <Badge variant="warning">{data.auth.status}</Badge>
+              )}
+              {data.encryption && !data.encryption.production_safe && (
+                <p className="text-amber-600">{data.encryption.warning}</p>
+              )}
+              <ul className="list-inside list-disc space-y-1 text-muted-foreground">
+                {data.next_steps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ul>
+              {data.paper_mode?.safe_to_test && (
+                <p className="text-xs text-muted-foreground">{data.paper_mode.note}</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         <div className="grid gap-6 md:grid-cols-2">
           <Card>

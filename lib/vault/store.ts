@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import type { ProviderType, ProviderKeyStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { writeAuditLog } from "@/lib/logger/audit";
-import { encryptSecret, maskSecret } from "@/lib/security/encryption";
+import { assertVaultWriteAllowed } from "@/lib/security/vault-policy";
 import { AppError } from "@/lib/security/errors";
 import { getOrCreateSystemUser } from "@/lib/trading/mode-service";
 import { testProviderConnection } from "@/lib/vault/provider-health";
@@ -85,6 +85,8 @@ export async function createProviderCredential(input: {
       reasonCode: "SECRET_REQUIRED",
     });
   }
+
+  assertVaultWriteAllowed();
 
   const permissions = await detectPermissions(
     input.provider,

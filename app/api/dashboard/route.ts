@@ -6,6 +6,8 @@ import { runFinalReadinessCheck } from "@/lib/trading/readiness";
 import { getWorkerRegistrySummary, DEPLOYMENT_SERVICES } from "@/workers";
 import { getRedisConnectionInfo } from "@/lib/config/redis";
 import { APP_VERSION } from "@/lib/config/constants";
+import { getEncryptionStatusPublic, getVaultWritePolicy } from "@/lib/security/vault-policy";
+import { getAuthStatus } from "@/lib/security/auth";
 import { toErrorResponse } from "@/lib/security/errors";
 import { logger } from "@/lib/logger";
 
@@ -28,6 +30,9 @@ export async function GET() {
       statisticallyMeaningful: false,
     });
     const readiness = runFinalReadinessCheck();
+    const encryption = getEncryptionStatusPublic();
+    const auth = getAuthStatus();
+    const vaultPolicy = getVaultWritePolicy();
 
     return NextResponse.json({
       version: APP_VERSION,
@@ -53,6 +58,28 @@ export async function GET() {
       evidence_level: 0,
       money_protected: null,
       api_health: "UNKNOWN",
+      auth,
+      encryption: {
+        production_safe: encryption.productionSafe,
+        vault_writes_allowed: vaultPolicy.allowed,
+        block_reasons: vaultPolicy.blockReasons,
+        warning: encryption.warning,
+      },
+      next_steps: [
+        "Paper Mode is safe to test — no real orders are placed",
+        "Auto execution is locked — do not enable live trading",
+        "Live trading is NOT ready — execution engine not wired",
+        vaultPolicy.allowed
+          ? "Vault writes allowed — still use read-only keys only until auth exists"
+          : "Do NOT add real API keys until ENCRYPTION_KEY is set and auth is implemented",
+        "Recommended now: Paper Mode + same-day shadow evidence only",
+      ],
+      paper_mode: {
+        safe_to_test: true,
+        places_real_orders: false,
+        shows_verified_pnl: false,
+        note: "Paper profit is simulated — never labeled as real profit",
+      },
       disclaimers: [
         "Dashboard shows system state — not fabricated P&L",
         "Paper/shadow profits are never labeled as real profit",

@@ -8,27 +8,35 @@ import {
   maskSecret,
   type EncryptionMethod,
 } from "@/lib/security/crypto-core";
+import { isValidEncryptionKey } from "@/lib/security/vault-policy";
 
 export type { EncryptionMethod } from "@/lib/security/crypto-core";
 export { maskSecret } from "@/lib/security/crypto-core";
+export {
+  isValidEncryptionKey,
+  getVaultWritePolicy,
+  assertVaultWriteAllowed,
+} from "@/lib/security/vault-policy";
 
 const DEV_KEY_WARNING =
-  "DEV_AES256_GCM encryption is UNSAFE for production. Set ENCRYPTION_KEY (32+ bytes base64) before live use.";
+  "DEV_AES256_GCM encryption is UNSAFE for production. Set ENCRYPTION_KEY (32+ bytes, base64) before storing real API keys.";
+
+const DEV_KEY_SOURCE = "alpha-autopilot-dev-key-UNSAFE-DO-NOT-USE-IN-PRODUCTION";
 
 function getEncryptionKey(): { key: Buffer; method: EncryptionMethod } {
-  if (env.ENCRYPTION_KEY && env.ENCRYPTION_KEY.length >= 32) {
-    return { key: deriveKey(env.ENCRYPTION_KEY), method: "AES256_GCM" };
+  if (isValidEncryptionKey(env.ENCRYPTION_KEY)) {
+    return { key: deriveKey(env.ENCRYPTION_KEY!.trim()), method: "AES256_GCM" };
   }
 
   if (env.NODE_ENV === "production") {
     throw new Error(
-      "ENCRYPTION_KEY is required in production. Refusing to use dev encryption.",
+      "ENCRYPTION_KEY is required in production (32+ bytes, base64). Refusing to start vault encryption.",
     );
   }
 
   logger.warn(DEV_KEY_WARNING);
   return {
-    key: deriveKey("alpha-autopilot-dev-key-UNSAFE-DO-NOT-USE-IN-PRODUCTION"),
+    key: deriveKey(DEV_KEY_SOURCE),
     method: "DEV_AES256_GCM",
   };
 }
@@ -51,13 +59,21 @@ export function getEncryptionStatus(): {
   method: EncryptionMethod;
   productionSafe: boolean;
   warning: string | null;
+  keyConfigured: boolean;
 } {
-  if (env.ENCRYPTION_KEY && env.ENCRYPTION_KEY.length >= 32) {
-    return { method: "AES256_GCM", productionSafe: true, warning: null };
+  const productionSafe = isValidEncryptionKey(env.ENCRYPTION_KEY);
+  if (productionSafe) {
+    return {
+      method: "AES256_GCM",
+      productionSafe: true,
+      warning: null,
+      keyConfigured: true,
+    };
   }
   return {
     method: "DEV_AES256_GCM",
     productionSafe: false,
     warning: DEV_KEY_WARNING,
+    keyConfigured: false,
   };
 }

@@ -21,7 +21,15 @@ interface ProviderMeta {
 interface VaultResponse {
   credentials: ProviderCredentialPublic[];
   providers: ProviderMeta[];
-  encryption: { method: string; productionSafe: boolean; warning: string | null };
+  encryption: {
+    method: string;
+    productionSafe: boolean;
+    warning: string | null;
+    vaultWritesAllowed?: boolean;
+  };
+  auth: { implemented: boolean; status: string; message: string };
+  vault_writes_allowed: boolean;
+  vault_block_reasons: string[];
 }
 
 export function ApiSetupPanel() {
@@ -122,6 +130,8 @@ export function ApiSetupPanel() {
   }
 
   const selectedMeta = vault?.providers.find((p) => p.id === provider);
+  const vaultWritesBlocked = vault ? !vault.vault_writes_allowed : true;
+  const blockReasons = vault?.vault_block_reasons ?? [];
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading API vault…</p>;
 
@@ -143,6 +153,30 @@ export function ApiSetupPanel() {
         <Card className="border-amber-600/40 bg-amber-600/10">
           <CardContent className="pt-4 text-sm text-amber-200">{vault.encryption.warning}</CardContent>
         </Card>
+      )}
+
+      {vaultWritesBlocked && blockReasons.length > 0 && (
+        <Card className="border-destructive/40 bg-destructive/10">
+          <CardContent className="space-y-2 pt-4 text-sm">
+            <p className="font-medium text-destructive">Vault writes blocked</p>
+            <ul className="list-inside list-disc text-muted-foreground">
+              {blockReasons.map((r) => (
+                <li key={r}>
+                  [{r}]{" "}
+                  {r === "ENCRYPTION_KEY_UNSAFE"
+                    ? "Set ENCRYPTION_KEY in .env (openssl rand -base64 32), restart dev server"
+                    : r === "AUTH_NOT_IMPLEMENTED"
+                      ? "User login not implemented — do not store real keys yet"
+                      : r}
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
+      {vault?.auth && !vault.auth.implemented && (
+        <Badge variant="outline">AUTH_NOT_IMPLEMENTED</Badge>
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
@@ -233,9 +267,18 @@ export function ApiSetupPanel() {
               </label>
             )}
 
-            <Button type="submit" disabled={submitting}>
-              {submitting ? "Saving…" : "Save Key (encrypted)"}
+            <Button type="submit" disabled={submitting || vaultWritesBlocked}>
+              {vaultWritesBlocked
+                ? "Vault writes blocked"
+                : submitting
+                  ? "Saving…"
+                  : "Save Key (encrypted)"}
             </Button>
+            {vaultWritesBlocked && (
+              <p className="text-xs text-muted-foreground">
+                Fix block reasons above before storing API keys. Read-only keys recommended when enabled.
+              </p>
+            )}
           </form>
         </CardContent>
       </Card>

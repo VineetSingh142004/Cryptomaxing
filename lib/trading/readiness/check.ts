@@ -1,10 +1,15 @@
 import type { ReadinessCheckItem } from "@/lib/trading/readiness/types";
+import { getEncryptionStatusPublic } from "@/lib/security/vault-policy";
+import { getAuthStatus } from "@/lib/security/auth";
 
 export function runFinalReadinessCheck(): {
   ready: boolean;
   items: ReadinessCheckItem[];
   summary: { passed: number; failed: number; partial: number };
 } {
+  const encryption = getEncryptionStatusPublic();
+  const auth = getAuthStatus();
+
   const items: ReadinessCheckItem[] = [
     check("project_builds", "Project builds from scratch", "PARTIAL", "Run npm run build locally"),
     check("paper_mode", "Paper mode exists", "PASS"),
@@ -52,7 +57,15 @@ export function runFinalReadinessCheck(): {
     check("reality_check", "Same-day reality check exists", "PASS"),
     check("learning", "Bounded learning engine exists", "PASS"),
     check("dashboard", "Dashboard exists", "PASS"),
-    check("security", "Security hardening exists", "PARTIAL", "No auth; rate limits in-memory only"),
+    check("security", "Security hardening exists", "PARTIAL", "Rate limits in-memory only"),
+    check(
+      "encryption_key",
+      "Production-safe ENCRYPTION_KEY",
+      encryption.productionSafe ? "PASS" : "PARTIAL",
+      encryption.productionSafe
+        ? undefined
+        : "Set ENCRYPTION_KEY (openssl rand -base64 32) — vault writes blocked until set",
+    ),
     check("workers", "Worker registry defined", "PARTIAL", "Redis queue not wired"),
     check("auto_bypass", "Auto cannot bypass anything", "PASS"),
     check("tests", "Tests pass", "PARTIAL", "Run npm test locally"),
@@ -63,7 +76,7 @@ export function runFinalReadinessCheck(): {
     check("auto_execution", "Auto execution (live orders)", "FAIL", "NOT_IMPLEMENTED — by design"),
     check("live_private_api", "Live exchange private API", "FAIL", "NOT_IMPLEMENTED"),
     check("redis", "Redis queue/cache", "FAIL", "NOT_IMPLEMENTED"),
-    check("auth", "User authentication", "FAIL", "NOT_IMPLEMENTED"),
+    check("auth", "User authentication", "FAIL", auth.status),
   ];
 
   const passed = items.filter((i) => i.status === "PASS").length;

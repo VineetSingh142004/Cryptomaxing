@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { AppError, toErrorResponse } from "@/lib/security/errors";
 import { getEncryptionStatus } from "@/lib/security/encryption";
+import { getAuthStatus } from "@/lib/security/auth";
+import { getVaultWritePolicy, assertVaultWriteAllowed } from "@/lib/security/vault-policy";
 import { logger } from "@/lib/logger";
 import {
   createProviderCredential,
@@ -13,10 +15,18 @@ export async function GET() {
   try {
     const credentials = await listProviderCredentials();
     const encryption = getEncryptionStatus();
+    const auth = getAuthStatus();
+    const vaultPolicy = getVaultWritePolicy();
     return NextResponse.json({
       credentials,
       providers: PROVIDER_TYPES.map((id) => PROVIDER_METADATA[id]),
-      encryption,
+      encryption: {
+        ...encryption,
+        vaultWritesAllowed: vaultPolicy.allowed,
+      },
+      auth,
+      vault_writes_allowed: vaultPolicy.allowed,
+      vault_block_reasons: vaultPolicy.blockReasons,
     });
   } catch (error) {
     logger.error({ err: error }, "GET /api/vault failed");
@@ -45,6 +55,8 @@ export async function POST(request: NextRequest) {
         details: parsed.error.flatten(),
       });
     }
+
+    assertVaultWriteAllowed();
 
     const credential = await createProviderCredential({
       provider: parsed.data.provider as typeof PROVIDER_TYPES[number],
