@@ -7,7 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import type { ProviderCredentialPublic } from "@/lib/vault/types";
+import type { ProviderKeyStatus } from "@prisma/client";
+import { credentialStatusLabel } from "@/lib/vault/credential-status";
 import { formatApiError, parseApiError } from "@/lib/utils/api-error";
+import { formatVerifyReasonMessage } from "@/lib/utils/verify-readonly-messages";
 
 interface ProviderMeta {
   id: string;
@@ -30,6 +33,8 @@ interface VaultResponse {
   auth: { implemented: boolean; status: string; message: string };
   vault_writes_allowed: boolean;
   vault_block_reasons: string[];
+  local_owner_mode?: boolean;
+  vault_status?: string;
 }
 
 export function ApiSetupPanel() {
@@ -44,6 +49,9 @@ export function ApiSetupPanel() {
   const [apiSecret, setApiSecret] = useState("");
   const [legallyConfirmed, setLegallyConfirmed] = useState(false);
   const [ipWhitelistConfigured, setIpWhitelistConfigured] = useState(false);
+  const [noWithdrawalPermission, setNoWithdrawalPermission] = useState(false);
+  const [noTradingPermission, setNoTradingPermission] = useState(false);
+  const [readOnlyConfirmed, setReadOnlyConfirmed] = useState(false);
 
   const fetchVault = useCallback(async () => {
     try {
@@ -80,13 +88,26 @@ export function ApiSetupPanel() {
           apiSecret: apiSecret || undefined,
           legallyConfirmed,
           ipWhitelistConfigured,
+          permissionSelfAttestation: exchangeAttestationRequired
+            ? {
+                noWithdrawalPermission,
+                noTradingPermission,
+                readOnlyConfirmed,
+                ipWhitelistConfirmed: ipWhitelistConfigured,
+              }
+            : undefined,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message ?? "Failed to save key");
+      if (!res.ok) {
+        const apiErr = await parseApiError(res);
+        throw new Error(formatApiError(apiErr, "Vault save failed"));
+      }
       setApiKey("");
       setApiSecret("");
       setLabel("");
+      setNoWithdrawalPermission(false);
+      setNoTradingPermission(false);
+      setReadOnlyConfirmed(false);
       await fetchVault();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
@@ -97,24 +118,43 @@ export function ApiSetupPanel() {
 
   async function handleTest(id: string) {
     const res = await fetch(`/api/vault/${id}`, { method: "POST" });
-    const data = await res.json();
     if (!res.ok) {
-      setError(data?.error?.message ?? "Test failed");
+      const apiErr = await parseApiError(res);
+      setError(formatApiError(apiErr, "Connection test failed"));
       return;
     }
     await fetchVault();
   }
 
-  async function handleDisable(id: string) {
-    const res = await fetch(`/api/vault/${id}`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "Disabled by user" }),
-    });
+  async function handleDelete(id: string) {
+    const res = await fetch(`/api/vault/${id}`, { method: "DELETE" });
     if (!res.ok) {
-      const data = await res.json();
-      setError(data?.error?.message ?? "Disable failed");
+      const apiErr = await parseApiError(res);
+      setError(formatApiError(apiErr, "Delete failed"));
       return;
+    }
+    await fetchVault();
+  }
+
+  async function handleVerifyReadOnly(credentialId?: string) {
+    setError(null);
+    const res = await fetch("/api/vault/verify-readonly", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(credentialId ? { credentialId } : {}),
+    });
+    const json = (await res.json()) as Record<string, unknown>;
+    if (!res.ok) {
+      const apiErr = await parseApiError(res);
+      setError(formatApiError(apiErr, "Verify failed"));
+      return;
+    }
+    const reasonCode = String(json.reasonCode ?? "UNKNOWN");
+    const hint = formatVerifyReasonMessage(reasonCode);
+    if (!json.safeToUseForReadOnly) {
+      setError(hint || `Verify failed: [${reasonCode}]`);
+    } else {
+      setError(null);
     }
     await fetchVault();
   }
@@ -122,8 +162,8 @@ export function ApiSetupPanel() {
   async function handleEmergencyDisable() {
     const res = await fetch("/api/vault/emergency-disable", { method: "POST" });
     if (!res.ok) {
-      const data = await res.json();
-      setError(data?.error?.message ?? "Emergency disable failed");
+      const apiErr = await parseApiError(res);
+      setError(formatApiError(apiErr, "Emergency disable failed"));
       return;
     }
     await fetchVault();
@@ -132,6 +172,10 @@ export function ApiSetupPanel() {
   const selectedMeta = vault?.providers.find((p) => p.id === provider);
   const vaultWritesBlocked = vault ? !vault.vault_writes_allowed : true;
   const blockReasons = vault?.vault_block_reasons ?? [];
+  const exchangeAttestationRequired = selectedMeta?.category === "exchange";
+  const attestationComplete =
+    !exchangeAttestationRequired ||
+    (noWithdrawalPermission && noTradingPermission && readOnlyConfirmed);
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading API vault…</p>;
 
@@ -163,11 +207,15 @@ export function ApiSetupPanel() {
               {blockReasons.map((r) => (
                 <li key={r}>
                   [{r}]{" "}
-                  {r === "ENCRYPTION_KEY_UNSAFE"
+                  {r === "ENCRYPTION_KEY_UNSAFE" || r === "DEV_ENCRYPTION_ONLY"
                     ? "Set ENCRYPTION_KEY in .env (openssl rand -base64 32), restart dev server"
-                    : r === "AUTH_NOT_IMPLEMENTED"
-                      ? "User login not implemented — do not store real keys yet"
-                      : r}
+                    : r === "AUTH_NOT_CONFIGURED"
+                      ? "Enable LOCAL_OWNER_MODE or configure Supabase Auth"
+                      : r === "AUTH_REQUIRED"
+                        ? "Sign in required before storing API keys"
+                        : r === "LOCAL_OWNER_MODE_UNSAFE_IN_PRODUCTION"
+                          ? "LOCAL_OWNER_MODE blocked in production"
+                          : r}
                 </li>
               ))}
             </ul>
@@ -175,8 +223,22 @@ export function ApiSetupPanel() {
         </Card>
       )}
 
-      {vault?.auth && !vault.auth.implemented && (
-        <Badge variant="outline">AUTH_NOT_IMPLEMENTED</Badge>
+      {vault?.auth &&
+        vault.auth.status !== "AUTH_READY" &&
+        vault.auth.status !== "LOCAL_OWNER_MODE" && (
+        <Badge variant="outline">{vault.auth.status}</Badge>
+      )}
+
+      {vault?.auth?.status === "LOCAL_OWNER_MODE" && (
+        <Badge variant="outline">LOCAL_OWNER_MODE_ACTIVE</Badge>
+      )}
+
+      {vault?.vault_writes_allowed === false && (
+        <p className="text-xs text-muted-foreground">
+          Vault writes are allowed in Local Owner Mode only after ENCRYPTION_KEY is valid. Do not add
+          real API keys until you understand exchange permissions. Use read-only keys first. Never
+          enable withdrawal permissions.
+        </p>
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
@@ -184,9 +246,57 @@ export function ApiSetupPanel() {
       <Card>
         <CardHeader>
           <CardTitle>Add Provider Key</CardTitle>
-          <CardDescription>Read-only keys recommended first. No withdrawal permissions.</CardDescription>
+          <CardDescription>
+            Read-only keys only for exchanges. No trading or withdrawal permissions.
+          </CardDescription>
         </CardHeader>
         <CardContent>
+          {exchangeAttestationRequired && (
+            <Card className="mb-4 border-amber-600/40 bg-amber-600/10">
+              <CardContent className="space-y-2 pt-4 text-sm">
+                <p className="font-medium text-amber-200">Read-only key checklist (required)</p>
+                <p className="text-xs text-muted-foreground">
+                  Only read-only keys are allowed. Never use withdrawal-enabled keys.
+                </p>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={noWithdrawalPermission}
+                    onChange={(e) => setNoWithdrawalPermission(e.target.checked)}
+                  />
+                  This key has no withdrawal permission
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={noTradingPermission}
+                    onChange={(e) => setNoTradingPermission(e.target.checked)}
+                  />
+                  This key has no trading/order placement permission
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={readOnlyConfirmed}
+                    onChange={(e) => setReadOnlyConfirmed(e.target.checked)}
+                  />
+                  This key is read-only
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={ipWhitelistConfigured}
+                    onChange={(e) => setIpWhitelistConfigured(e.target.checked)}
+                  />
+                  IP whitelist is configured (recommended)
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  Could not fully verify permissions automatically. Confirm manually that this key
+                  has no trading or withdrawal permissions.
+                </p>
+              </CardContent>
+            </Card>
+          )}
           <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="provider">Provider</Label>
@@ -247,14 +357,16 @@ export function ApiSetupPanel() {
               </div>
             )}
 
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={ipWhitelistConfigured}
-                onChange={(e) => setIpWhitelistConfigured(e.target.checked)}
-              />
-              IP whitelist configured on provider
-            </label>
+            {!exchangeAttestationRequired && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={ipWhitelistConfigured}
+                  onChange={(e) => setIpWhitelistConfigured(e.target.checked)}
+                />
+                IP whitelist configured on provider
+              </label>
+            )}
 
             {selectedMeta && !selectedMeta.legallySupportedDefault && (
               <label className="flex items-center gap-2 text-sm text-amber-200">
@@ -267,12 +379,14 @@ export function ApiSetupPanel() {
               </label>
             )}
 
-            <Button type="submit" disabled={submitting || vaultWritesBlocked}>
+            <Button type="submit" disabled={submitting || vaultWritesBlocked || !attestationComplete}>
               {vaultWritesBlocked
                 ? "Vault writes blocked"
-                : submitting
-                  ? "Saving…"
-                  : "Save Key (encrypted)"}
+                : !attestationComplete && exchangeAttestationRequired
+                  ? "Complete read-only checklist"
+                  : submitting
+                    ? "Saving…"
+                    : "Save Key (encrypted)"}
             </Button>
             {vaultWritesBlocked && (
               <p className="text-xs text-muted-foreground">
@@ -293,36 +407,89 @@ export function ApiSetupPanel() {
             <p className="text-sm text-muted-foreground">No credentials stored.</p>
           )}
           {vault?.credentials.map((cred) => (
-            <div key={cred.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3">
-              <div>
-                <p className="font-medium">{cred.label}</p>
-                <p className="text-xs text-muted-foreground">
-                  {cred.provider} · {cred.status} · {cred.encryptionMethod}
-                </p>
-                {cred.permissionReasonCode && (
-                  <Badge variant="outline" className="mt-1">
-                    {cred.permissionReasonCode}
-                  </Badge>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => void handleTest(cred.id)}>
-                  Test
-                </Button>
-                {cred.status === "ACTIVE" || cred.status === "PERMISSION_UNKNOWN" ? (
-                  <Button size="sm" variant="destructive" onClick={() => void handleDisable(cred.id)}>
-                    Disable
-                  </Button>
-                ) : null}
-              </div>
-            </div>
+            <StoredCredentialRow
+              key={cred.id}
+              cred={cred}
+              onTest={() => void handleTest(cred.id)}
+              onVerify={() => void handleVerifyReadOnly(cred.id)}
+              onDelete={() => void handleDelete(cred.id)}
+            />
           ))}
 
-          <Button variant="destructive" size="sm" onClick={() => void handleEmergencyDisable()}>
-            Emergency Disable All Keys
-          </Button>
+          <div className="flex flex-wrap gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => void handleVerifyReadOnly()}>
+              Verify Read-Only Key
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => void handleEmergencyDisable()}>
+              Emergency Disable All Keys
+            </Button>
+          </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function StoredCredentialRow({
+  cred,
+  onTest,
+  onVerify,
+  onDelete,
+}: {
+  cred: ProviderCredentialPublic;
+  onTest: () => void;
+  onVerify: () => void;
+  onDelete: () => void;
+}) {
+  const enabled = credentialStatusLabel(cred.status as ProviderKeyStatus) === "ENABLED";
+  const readOnlyAttested = cred.permissionSelfAttestation?.readOnlyConfirmed ? "YES" : "NO";
+  const ipWhitelistConfirmed = cred.permissionSelfAttestation?.ipWhitelistConfirmed ? "YES" : "NO";
+
+  return (
+    <div className="space-y-3 rounded-lg border p-3">
+      <div className="space-y-1">
+        <p className="font-medium">{cred.label}</p>
+        <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+          <div>Provider: {cred.provider}</div>
+          <div>Created: {new Date(cred.createdAt).toLocaleString()}</div>
+          <div className="flex items-center gap-2">
+            <span>Status:</span>
+            <Badge variant={enabled ? "success" : "warning"}>
+              {credentialStatusLabel(cred.status as ProviderKeyStatus)}
+            </Badge>
+          </div>
+          <div>
+            Last verified:{" "}
+            {cred.lastReadOnlyVerifiedAt
+              ? new Date(cred.lastReadOnlyVerifiedAt).toLocaleString()
+              : "—"}
+          </div>
+          <div>Read-only attested: {readOnlyAttested}</div>
+          <div>IP whitelist confirmed: {ipWhitelistConfirmed}</div>
+          <div>Encryption: {cred.encryptionMethod}</div>
+        </div>
+        {!enabled && (
+          <p className="text-xs text-amber-600">
+            Credential is disabled. Verification will not use this key. Delete it and save a new
+            read-only key.
+          </p>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {enabled ? (
+          <>
+            <Button size="sm" variant="outline" onClick={onVerify}>
+              Verify Read-Only Key
+            </Button>
+            <Button size="sm" variant="outline" onClick={onTest}>
+              Test Connection
+            </Button>
+          </>
+        ) : null}
+        <Button size="sm" variant="destructive" onClick={onDelete}>
+          Delete Credential
+        </Button>
+      </div>
     </div>
   );
 }

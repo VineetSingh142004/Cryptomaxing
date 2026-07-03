@@ -29,8 +29,9 @@ async function timedFetch<T>(url: string): Promise<{ data: T; latencyMs: number 
   }
 }
 
-export async function fetchKrakenTicker(symbol: string): Promise<NormalizedTicker> {
-  const pair = KRAKEN_SYMBOL_MAP[symbol] ?? symbol.replace("/", "");
+export async function fetchKrakenTicker(symbol: string, krakenPair?: string): Promise<NormalizedTicker> {
+  const { resolveKrakenPair } = await import("@/lib/trading/paper/kraken-universe");
+  const pair = krakenPair ?? KRAKEN_SYMBOL_MAP[symbol] ?? resolveKrakenPair(symbol);
   const { data, latencyMs } = await timedFetch<{
     result: Record<string, { a: string[]; b: string[]; c: string[]; v: string[] }>;
   }>(`https://api.kraken.com/0/public/Ticker?pair=${pair}`);
@@ -57,8 +58,9 @@ export async function fetchKrakenTicker(symbol: string): Promise<NormalizedTicke
   };
 }
 
-export async function fetchKrakenOrderBook(symbol: string, depth = 25): Promise<NormalizedOrderBook> {
-  const pair = KRAKEN_SYMBOL_MAP[symbol] ?? symbol.replace("/", "");
+export async function fetchKrakenOrderBook(symbol: string, depth = 25, krakenPair?: string): Promise<NormalizedOrderBook> {
+  const { resolveKrakenPair } = await import("@/lib/trading/paper/kraken-universe");
+  const pair = krakenPair ?? KRAKEN_SYMBOL_MAP[symbol] ?? resolveKrakenPair(symbol);
   const { data, latencyMs } = await timedFetch<{
     result: { [key: string]: { bids: string[][]; asks: string[][] } };
   }>(`https://api.kraken.com/0/public/Depth?pair=${pair}&count=${depth}`);
@@ -78,8 +80,10 @@ export async function fetchKrakenOrderBook(symbol: string, depth = 25): Promise<
 export async function fetchKrakenOHLC(
   symbol: string,
   intervalMinutes: number,
+  krakenPair?: string,
 ): Promise<NormalizedCandle[]> {
-  const pair = KRAKEN_SYMBOL_MAP[symbol] ?? symbol.replace("/", "");
+  const { resolveKrakenPair } = await import("@/lib/trading/paper/kraken-universe");
+  const pair = krakenPair ?? KRAKEN_SYMBOL_MAP[symbol] ?? resolveKrakenPair(symbol);
   const { data } = await timedFetch<{
     result: { [key: string]: number[][] };
   }>(`https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${intervalMinutes}`);

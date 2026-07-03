@@ -121,7 +121,21 @@ export function buildProfitabilityReport(input: ProfitabilityReportInput): Profi
       : null);
 
   const paperNet = input.paperTrades?.reduce((s, t) => s + netPnl(t), 0) ?? null;
-  const liveNet = realizedNetPnl;
+  const shadowNet = input.shadowTrades?.reduce((s, t) => s + netPnl(t), 0) ?? null;
+  const liveNet = verifiedTrades.length > 0 ? realizedNetPnl : null;
+
+  if (input.readOnlyAccountDataAvailable) {
+    disclaimers.push(
+      "Read-only account data available for reconciliation — not counted as verified live P&L",
+    );
+  }
+
+  if (paperNet !== null) {
+    disclaimers.push("Paper P&L is simulated — never labeled as real profit");
+  }
+  if (shadowNet !== null) {
+    disclaimers.push("Shadow P&L is simulated — never labeled as real profit");
+  }
 
   return {
     dateRange: input.dateRange,
@@ -175,6 +189,14 @@ export function buildProfitabilityReport(input: ProfitabilityReportInput): Profi
     annualizationWarning,
     profitabilityClaim,
     disclaimers,
+    readOnlyAccountData: {
+      available: Boolean(input.readOnlyAccountDataAvailable),
+      tradeCount: input.readOnlyTradeCount ?? 0,
+      note: "Read-only exchange API data — use for reconciliation only",
+    },
+    paperSimulatedPnl: paperNet,
+    shadowSimulatedPnl: shadowNet,
+    verifiedLivePnl: liveNet,
     generatedAt: new Date().toISOString(),
   };
 }

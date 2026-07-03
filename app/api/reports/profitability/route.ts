@@ -5,6 +5,8 @@ import { checkRateLimit } from "@/lib/security/api-guards";
 import { toErrorResponse } from "@/lib/security/errors";
 import { logger } from "@/lib/logger";
 import type { LiveTradeRecord } from "@/lib/trading/live/types";
+import { prisma } from "@/lib/db/client";
+import { resolveUserId } from "@/lib/security/auth";
 
 const reportSchema = z.object({
   date_range: z.object({ start: z.string(), end: z.string() }),
@@ -28,19 +30,69 @@ const reportSchema = z.object({
 /** Safe empty report — no fabricated P&L */
 export async function GET() {
   const today = new Date().toISOString().slice(0, 10);
+
+  let paperTradesFromDb: LiveTradeRecord[] = [];
+  let exchangeHistoricalNote = "Exchange historical trades are not Alpha Autopilot proof";
+  try {
+    const userId = await resolveUserId();
+    const closed = await prisma.paperTrade.findMany({
+      where: {
+        userId,
+        status: { in: ["CLOSED", "EXPIRED"] },
+        isRealTrade: false,
+      },
+      orderBy: { closedAt: "asc" },
+    });
+    paperTradesFromDb = closed
+      .filter((t) => t.closedAt && t.entryPrice && t.exitPrice && t.simulatedSize)
+      .map((t) => ({
+        id: t.id,
+        strategyId: t.strategyName,
+        symbol: t.symbol,
+        venue: "kraken",
+        direction: t.side === "SHORT" ? "short" : "long",
+        entryTime: (t.openedAt ?? t.createdAt).toISOString(),
+        exitTime: t.closedAt!.toISOString(),
+        entryPrice: Number(t.entryPrice),
+        exitPrice: Number(t.exitPrice),
+        size: Number(t.simulatedSize),
+        grossPnl: Number(t.grossPaperPnl ?? 0),
+        fees: Number(t.estimatedFees ?? 0),
+        spreadCost: 0,
+        slippage: Number(t.estimatedSlippage ?? 0),
+        funding: 0,
+        reconciled: false,
+      }));
+  } catch {
+    exchangeHistoricalNote = "Exchange historical trades unavailable";
+  }
+
   const report = buildProfitabilityReport({
     dateRange: { start: today, end: today },
     startingEquity: 0,
     endingEquity: 0,
     trades: [],
+    paperTrades: paperTradesFromDb,
     evidenceLevel: 0,
     sampleSize: 0,
     statisticallyMeaningful: false,
     edgeTrend: "UNKNOWN",
+    readOnlyAccountDataAvailable: false,
+    readOnlyTradeCount: 0,
   });
   return NextResponse.json({
     ...report,
-    note: "Empty report — POST verified trade data to generate a real report",
+    pnlSections: {
+      verifiedLiveAlphaAutopilotPnl: report.verifiedLivePnl,
+      exchangeAccountHistoricalTrades: {
+        available: false,
+        netPnl: null,
+        note: exchangeHistoricalNote,
+      },
+      paperSimulatedPnl: report.paperSimulatedPnl,
+      shadowSimulatedPnl: report.shadowSimulatedPnl,
+    },
+    note: "Verified live P&L remains blank without reconciled bot trades. Paper/shadow P&L is simulated only.",
   });
 }
 

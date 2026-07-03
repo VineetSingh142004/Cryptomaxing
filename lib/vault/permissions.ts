@@ -51,18 +51,43 @@ export async function detectPermissions(
 }
 
 async function detectKrakenPermissions(
-  _apiKey: string,
-  _apiSecret: string,
+  apiKey: string,
+  apiSecret: string,
 ): Promise<DetectedPermissions> {
-  // Kraken QueryPermissions requires signed private API — full wiring in later prompt
-  return {
-    canRead: true,
-    canTrade: false,
-    canWithdraw: false,
-    detected: false,
-    reasonCode: "KRAKEN_PERMISSIONS_NOT_IMPLEMENTED",
-    detail: "Use read-only API keys. Full permission query NOT_IMPLEMENTED — manually verify no withdrawal.",
-  };
+  const { verifyKrakenReadOnlyKey } = await import("@/lib/trading/exchange/kraken-readonly");
+
+  try {
+    const verification = await verifyKrakenReadOnlyKey({ apiKey, apiSecret });
+    if (!verification.canReadBalance) {
+      return {
+        canRead: false,
+        canTrade: false,
+        canWithdraw: false,
+        detected: true,
+        reasonCode: verification.reasonCode,
+        detail: "Kraken key failed read-only balance check — verify key permissions",
+      };
+    }
+
+    return {
+      canRead: true,
+      canTrade: false,
+      canWithdraw: false,
+      detected: false,
+      reasonCode: "KRAKEN_READ_ONLY_UNVERIFIED_PERMISSIONS",
+      detail:
+        "Read-only endpoints verified. Could not fully verify permissions — confirm manually that this key has no trading or withdrawal permissions.",
+    };
+  } catch {
+    return {
+      canRead: false,
+      canTrade: false,
+      canWithdraw: false,
+      detected: false,
+      reasonCode: "KRAKEN_PERMISSION_CHECK_FAILED",
+      detail: "Could not verify Kraken key — confirm read-only permissions manually before saving.",
+    };
+  }
 }
 
 async function detectCoinbasePermissions(
@@ -118,6 +143,14 @@ export function validatePermissionsForStorage(permissions: DetectedPermissions):
       allowed: false,
       status: "BLOCKED_WITHDRAWAL",
       reasonCode: "WITHDRAWAL_PERMISSION_BLOCKED",
+    };
+  }
+
+  if (permissions.canTrade) {
+    return {
+      allowed: false,
+      status: "BLOCKED_WITHDRAWAL",
+      reasonCode: "TRADING_PERMISSION_BLOCKED",
     };
   }
 

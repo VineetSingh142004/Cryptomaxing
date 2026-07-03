@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { evaluateAutoUnlock, defaultAutoUnlockInput } from "@/lib/trading/auto";
+import { evaluateAutoUnlock, buildAutoUnlockInput } from "@/lib/trading/auto";
 import { assertServerSideAutoAuthorization, checkRateLimit } from "@/lib/security/api-guards";
 import { toErrorResponse } from "@/lib/security/errors";
 import { logger } from "@/lib/logger";
@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     const parsed = schema.safeParse(body);
     const overrides = (parsed.success ? parsed.data : {}) as Record<string, unknown>;
 
-    const input = defaultAutoUnlockInput({
+    const input = await buildAutoUnlockInput({
       ...overrides,
       evidenceLevel: typeof overrides.evidenceLevel === "number" ? overrides.evidenceLevel : 0,
     });
@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
-  const result = evaluateAutoUnlock(defaultAutoUnlockInput());
+  const input = await buildAutoUnlockInput();
+  const result = evaluateAutoUnlock(input);
   return NextResponse.json(result);
 }

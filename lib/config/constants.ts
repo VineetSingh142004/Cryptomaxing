@@ -36,3 +36,5 @@ export const EVIDENCE_LEVELS = [
 export const TRADE_PERMISSION_DECISIONS = ["ALLOW", "BLOCK", "WAIT"] as const;
 
 export const DEFAULT_SYSTEM_USER_EMAIL = "system@alpha-autopilot.local";
+export const LOCAL_OWNER_EMAIL = "local-owner@alpha-autopilot.local";
+export const LOCAL_OWNER_DISPLAY_ID = "local-owner";

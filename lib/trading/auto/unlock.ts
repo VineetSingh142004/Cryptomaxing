@@ -7,6 +7,9 @@ function gate(id: string, label: string, passed: boolean, required = true): Auto
 export function evaluateAutoUnlock(input: AutoUnlockInput): AutoUnlockResult {
   const reasonCodes: string[] = [];
   const gates: AutoUnlockGate[] = [
+    gate("auth_configured", "Auth configured", input.authConfigured ?? false),
+    gate("auth_ready", "User authenticated", input.authReady ?? false),
+    gate("encryption_safe", "Encryption production-safe", input.encryptionProductionSafe ?? false),
     gate("emergency", "Emergency not paused", !input.emergencyPaused),
     gate("paper_realistic", "Paper realistic", input.paperRealistic),
     gate("manual_working", "Manual working", input.manualWorking),
@@ -149,18 +152,78 @@ export function evaluateAutoUnlock(input: AutoUnlockInput): AutoUnlockResult {
   if (!input.executionEngineWired) {
     reasonCodes.push("EXECUTION_ENGINE_NOT_WIRED");
   }
+  if (!(input.authReady ?? false)) {
+    reasonCodes.push("AUTH_REQUIRED");
+  }
+  if (!(input.encryptionProductionSafe ?? false)) {
+    reasonCodes.push("ENCRYPTION_KEY_UNSAFE");
+  }
+  if (!input.liveReconciliationPasses) {
+    reasonCodes.push("NO_LIVE_RECONCILIATION");
+  }
+  if (!input.liveSampleSizePasses) {
+    reasonCodes.push("NO_LIVE_SAMPLE_SIZE");
+  }
+  if (!input.tinyLiveCanaryPasses) {
+    reasonCodes.push("NO_TINY_CANARY");
+  }
+  if (!input.liveExecutionAuditPasses) {
+    reasonCodes.push("NO_LIVE_EXECUTION_AUDIT");
+  }
+  if (input.weakTodayProof || !input.todayMarketProofAvailable) {
+    reasonCodes.push("TODAY_PROOF_WEAK");
+  }
+  if (!input.todayAlphaBetaPasses) {
+    reasonCodes.push("ALPHA_BETA_CHECK_MISSING");
+  }
+  if (!input.paperForwardPasses && !input.shadowLivePasses) {
+    reasonCodes.push("PAPER_SHADOW_ONLY");
+  }
+  if (!input.userApprovedAutoStage) {
+    reasonCodes.push("USER_APPROVAL_MISSING");
+  }
+
+  const nextGateToFix = gatesFailed[0]?.id ?? null;
+  const safestNextAction = pickSafestNextAction(gatesFailed, decision);
 
   return {
     decision,
     autoExecutionEnabled,
     gatesPassed,
     gatesFailed,
+    failedGates: gatesFailed,
     failedGateIds,
+    failedGateCount: gatesFailed.length,
+    nextGateToFix,
+    safestNextAction,
     reasonCodes,
     scalingAllowed,
     maxMode,
     evaluatedAt: new Date().toISOString(),
   };
+}
+
+function pickSafestNextAction(
+  failed: AutoUnlockGate[],
+  decision: AutoUnlockDecision,
+): string {
+  const ids = new Set(failed.map((g) => g.id));
+  if (ids.has("auth_ready") || ids.has("auth_configured")) {
+    return "Sign in and configure Supabase auth before vault or live trading";
+  }
+  if (ids.has("encryption_safe")) {
+    return "Generate ENCRYPTION_KEY (openssl rand -base64 32) before storing API keys";
+  }
+  if (ids.has("execution_engine")) {
+    return "Stay in Paper Mode — execution engine is not wired";
+  }
+  if (decision === "PAPER_ONLY" || ids.has("paper_forward") || ids.has("shadow_live")) {
+    return "Continue Paper Mode and collect same-day shadow/paper evidence only";
+  }
+  if (ids.has("live_reconciliation") || ids.has("live_sample")) {
+    return "Do not trade live — reconciled live sample required";
+  }
+  return "Stay in Paper Mode — Auto execution remains locked";
 }
 
 export function defaultAutoUnlockInput(overrides: Partial<AutoUnlockInput> = {}): AutoUnlockInput {
@@ -218,7 +281,26 @@ export function defaultAutoUnlockInput(overrides: Partial<AutoUnlockInput> = {})
     dailyWeeklyLossAvailable: true,
     userApprovedAutoStage: false,
     executionEngineWired: false,
+    authConfigured: false,
+    authReady: false,
+    encryptionProductionSafe: false,
     evidenceLevel: 0,
     ...overrides,
   };
+}
+
+export async function buildAutoUnlockInput(
+  overrides: Partial<AutoUnlockInput> = {},
+): Promise<AutoUnlockInput> {
+  const { getAuthStatus } = await import("@/lib/security/auth");
+  const { isEncryptionProductionSafe } = await import("@/lib/security/vault-policy");
+  const auth = await getAuthStatus();
+  const authReady =
+    auth.status === "AUTH_READY" || auth.status === "LOCAL_OWNER_MODE";
+  return defaultAutoUnlockInput({
+    authConfigured: auth.configured || auth.status === "LOCAL_OWNER_MODE",
+    authReady,
+    encryptionProductionSafe: isEncryptionProductionSafe(),
+    ...overrides,
+  });
 }

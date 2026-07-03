@@ -68,6 +68,9 @@ export interface AutoUnlockInput {
   dailyWeeklyLossAvailable: boolean;
   userApprovedAutoStage: boolean;
   executionEngineWired: boolean;
+  authConfigured?: boolean;
+  authReady?: boolean;
+  encryptionProductionSafe?: boolean;
   oneBigLiveWin?: boolean;
   backtestProfitOnly?: boolean;
   unreconciledPnl?: boolean;
@@ -82,7 +85,11 @@ export interface AutoUnlockResult {
   autoExecutionEnabled: boolean;
   gatesPassed: AutoUnlockGate[];
   gatesFailed: AutoUnlockGate[];
+  failedGates: AutoUnlockGate[];
   failedGateIds: string[];
+  failedGateCount: number;
+  nextGateToFix: string | null;
+  safestNextAction: string;
   reasonCodes: string[];
   scalingAllowed: boolean;
   maxMode: AutoUnlockDecision;

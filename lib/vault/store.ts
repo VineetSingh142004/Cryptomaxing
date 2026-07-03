@@ -3,11 +3,16 @@ import type { ProviderType, ProviderKeyStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { writeAuditLog } from "@/lib/logger/audit";
 import { assertVaultWriteAllowed } from "@/lib/security/vault-policy";
+import { encryptSecret, maskSecret } from "@/lib/security/encryption";
+import { resolveUserId, assertUserOwnsResource } from "@/lib/security/auth";
 import { AppError } from "@/lib/security/errors";
-import { getOrCreateSystemUser } from "@/lib/trading/mode-service";
 import { testProviderConnection } from "@/lib/vault/provider-health";
 import { detectPermissions, validatePermissionsForStorage } from "@/lib/vault/permissions";
+import { permissionsFromAttestation } from "@/lib/vault/save-validation";
+import { isEnabledCredentialStatus } from "@/lib/vault/credential-status";
 import { PROVIDER_METADATA, type ProviderCredentialPublic } from "@/lib/vault/types";
+
+export { isEnabledCredentialStatus } from "@/lib/vault/credential-status";
 
 function toPublicCredential(c: {
   id: string;
@@ -30,7 +35,28 @@ function toPublicCredential(c: {
   encryptedKey: string;
   createdAt: Date;
   updatedAt: Date;
+  permissionSelfAttestation?: unknown;
+  lastReadOnlyVerifiedAt?: Date | null;
 }): ProviderCredentialPublic {
+  const attestationRaw = c.permissionSelfAttestation;
+  let permissionSelfAttestation: ProviderCredentialPublic["permissionSelfAttestation"] = null;
+  if (attestationRaw && typeof attestationRaw === "object") {
+    const a = attestationRaw as Record<string, unknown>;
+    if (
+      typeof a.noWithdrawalPermission === "boolean" &&
+      typeof a.noTradingPermission === "boolean" &&
+      typeof a.readOnlyConfirmed === "boolean"
+    ) {
+      permissionSelfAttestation = {
+        noWithdrawalPermission: a.noWithdrawalPermission,
+        noTradingPermission: a.noTradingPermission,
+        readOnlyConfirmed: a.readOnlyConfirmed,
+        ipWhitelistConfirmed: Boolean(a.ipWhitelistConfirmed),
+        confirmedAt: typeof a.confirmedAt === "string" ? a.confirmedAt : c.createdAt.toISOString(),
+      };
+    }
+  }
+
   return {
     id: c.id,
     provider: c.provider,
@@ -44,19 +70,20 @@ function toPublicCredential(c: {
     canWithdraw: c.canWithdraw,
     permissionDetected: c.permissionDetected,
     permissionReasonCode: c.permissionReasonCode,
+    permissionSelfAttestation,
+    lastReadOnlyVerifiedAt: c.lastReadOnlyVerifiedAt?.toISOString() ?? null,
     lastConnectionTestAt: c.lastConnectionTestAt?.toISOString() ?? null,
     lastConnectionStatus: c.lastConnectionStatus,
     lastHealthCheckAt: c.lastHealthCheckAt?.toISOString() ?? null,
     lastHealthStatus: c.lastHealthStatus,
     lastLatencyMs: c.lastLatencyMs,
-    keyPreview: maskSecret("key-placeholder"),
+    keyPreview: maskSecret(c.encryptedKey.slice(0, 12)),
     createdAt: c.createdAt.toISOString(),
     updatedAt: c.updatedAt.toISOString(),
   };
 }
 
-export async function listProviderCredentials(): Promise<ProviderCredentialPublic[]> {
-  const userId = await getOrCreateSystemUser();
+export async function listProviderCredentials(userId: string): Promise<ProviderCredentialPublic[]> {
   const credentials = await prisma.providerCredential.findMany({
     where: { userId },
     orderBy: { createdAt: "desc" },
@@ -72,6 +99,12 @@ export async function createProviderCredential(input: {
   passphrase?: string;
   ipWhitelistConfigured?: boolean;
   legallyConfirmed?: boolean;
+  permissionSelfAttestation?: {
+    noWithdrawalPermission: boolean;
+    noTradingPermission: boolean;
+    readOnlyConfirmed: boolean;
+    ipWhitelistConfirmed: boolean;
+  };
 }): Promise<ProviderCredentialPublic> {
   const meta = PROVIDER_METADATA[input.provider];
   if (!meta.legallySupportedDefault && !input.legallyConfirmed) {
@@ -80,20 +113,38 @@ export async function createProviderCredential(input: {
     });
   }
 
-  if (meta.requiresSecret && !input.apiSecret) {
+  if (meta.requiresSecret && !input.apiSecret?.trim()) {
     throw new AppError("VALIDATION_ERROR", "API secret is required for this provider", {
-      reasonCode: "SECRET_REQUIRED",
+      reasonCode: "API_SECRET_MISSING",
     });
   }
 
-  assertVaultWriteAllowed();
+  if (meta.category === "exchange") {
+    const att = input.permissionSelfAttestation;
+    if (
+      !att?.noWithdrawalPermission ||
+      !att?.noTradingPermission ||
+      !att?.readOnlyConfirmed
+    ) {
+      throw new AppError(
+        "VALIDATION_ERROR",
+        "Exchange keys require read-only self-attestation checklist confirmation",
+        { reasonCode: "READ_ONLY_ATTESTATION_REQUIRED" },
+      );
+    }
+  }
 
-  const permissions = await detectPermissions(
-    input.provider,
-    input.apiKey,
-    input.apiSecret ?? "",
-    input.passphrase,
-  );
+  await assertVaultWriteAllowed();
+
+  const permissions =
+    meta.category === "exchange" && input.permissionSelfAttestation
+      ? permissionsFromAttestation(input.provider)
+      : await detectPermissions(
+          input.provider,
+          input.apiKey.trim(),
+          input.apiSecret?.trim() ?? "",
+          input.passphrase?.trim(),
+        );
 
   const validation = validatePermissionsForStorage(permissions);
   if (!validation.allowed) {
@@ -102,17 +153,32 @@ export async function createProviderCredential(input: {
     });
   }
 
-  const encKey = encryptSecret(input.apiKey);
-  const encSecret = input.apiSecret ? encryptSecret(input.apiSecret) : null;
-  const encPassphrase = input.passphrase ? encryptSecret(input.passphrase) : null;
+  const encKey = encryptSecret(input.apiKey.trim());
+  const encSecret = input.apiSecret?.trim() ? encryptSecret(input.apiSecret.trim()) : null;
+  const encPassphrase = input.passphrase?.trim() ? encryptSecret(input.passphrase.trim()) : null;
 
-  const userId = await getOrCreateSystemUser();
+  let userId: string;
+  try {
+    userId = await resolveUserId({ requireAuth: true });
+  } catch (error) {
+    throw new AppError("FORBIDDEN", "Local owner or authenticated user could not be resolved", {
+      reasonCode: "LOCAL_OWNER_RESOLUTION_FAILED",
+      cause: error,
+    });
+  }
+
+  const attestationPayload = input.permissionSelfAttestation
+    ? {
+        ...input.permissionSelfAttestation,
+        confirmedAt: new Date().toISOString(),
+      }
+    : null;
 
   const credential = await prisma.providerCredential.create({
     data: {
       userId,
       provider: input.provider,
-      label: input.label,
+      label: input.label.trim(),
       encryptedKey: encKey.ciphertext,
       encryptedSecret: encSecret?.ciphertext ?? null,
       encryptedPassphrase: encPassphrase?.ciphertext ?? null,
@@ -121,6 +187,7 @@ export async function createProviderCredential(input: {
       ipWhitelistRecommended: meta.ipWhitelistRecommended,
       ipWhitelistConfigured: input.ipWhitelistConfigured ?? false,
       permissionsMetadata: permissions as unknown as Prisma.InputJsonValue,
+      permissionSelfAttestation: attestationPayload as unknown as Prisma.InputJsonValue,
       canRead: permissions.canRead,
       canTrade: permissions.canTrade,
       canWithdraw: permissions.canWithdraw,
@@ -141,11 +208,32 @@ export async function createProviderCredential(input: {
   return toPublicCredential(credential);
 }
 
+export async function deleteProviderCredential(id: string): Promise<{ deleted: true; id: string }> {
+  const userId = await resolveUserId({ requireAuth: true });
+  const existing = await prisma.providerCredential.findFirst({ where: { id, userId } });
+  if (!existing) {
+    throw new AppError("NOT_FOUND", "Credential not found", { reasonCode: "CREDENTIAL_NOT_FOUND" });
+  }
+
+  await prisma.providerCredential.delete({ where: { id } });
+
+  await writeAuditLog({
+    userId,
+    action: "API_KEY_DELETED",
+    entityType: "provider_credential",
+    entityId: id,
+    reasonCode: "CREDENTIAL_DELETED",
+    detail: { provider: existing.provider, label: existing.label, status: existing.status },
+  });
+
+  return { deleted: true, id };
+}
+
 export async function disableProviderCredential(
   id: string,
   reason: string,
 ): Promise<ProviderCredentialPublic> {
-  const userId = await getOrCreateSystemUser();
+  const userId = await resolveUserId({ requireAuth: true });
   const existing = await prisma.providerCredential.findFirst({ where: { id, userId } });
   if (!existing) {
     throw new AppError("NOT_FOUND", "Credential not found", { reasonCode: "CREDENTIAL_NOT_FOUND" });
@@ -153,7 +241,7 @@ export async function disableProviderCredential(
 
   const updated = await prisma.providerCredential.update({
     where: { id },
-    data: { status: "DISABLED", disabledReason: reason },
+    data: { status: "DISABLED", disabledReason: reason, disabledAt: new Date() },
   });
 
   await writeAuditLog({
@@ -168,15 +256,18 @@ export async function disableProviderCredential(
   return toPublicCredential(updated);
 }
 
-export async function emergencyDisableAllCredentials(userId?: string): Promise<{ disabledCount: number }> {
-  const uid = userId ?? (await getOrCreateSystemUser());
+export async function emergencyDisableAllCredentials(userId: string): Promise<{ disabledCount: number }> {
   const result = await prisma.providerCredential.updateMany({
-    where: { userId: uid, status: { in: ["ACTIVE", "PERMISSION_UNKNOWN"] } },
-    data: { status: "EMERGENCY_DISABLED", disabledReason: "Emergency disable activated" },
+    where: { userId, status: { in: ["ACTIVE", "PERMISSION_UNKNOWN"] } },
+    data: {
+      status: "EMERGENCY_DISABLED",
+      disabledReason: "Emergency disable activated",
+      disabledAt: new Date(),
+    },
   });
 
   await writeAuditLog({
-    userId: uid,
+    userId,
     action: "API_KEY_EMERGENCY_DISABLE",
     reasonCode: "EMERGENCY_DISABLE_ALL",
     detail: { disabledCount: result.count },
@@ -189,13 +280,13 @@ export async function runConnectionTest(id: string): Promise<{
   credential: ProviderCredentialPublic;
   test: Awaited<ReturnType<typeof testProviderConnection>>;
 }> {
-  const userId = await getOrCreateSystemUser();
+  const userId = await resolveUserId({ requireAuth: true });
   const credential = await prisma.providerCredential.findFirst({ where: { id, userId } });
   if (!credential) {
     throw new AppError("NOT_FOUND", "Credential not found", { reasonCode: "CREDENTIAL_NOT_FOUND" });
   }
 
-  if (credential.status === "DISABLED" || credential.status === "EMERGENCY_DISABLED") {
+  if (!isEnabledCredentialStatus(credential.status)) {
     throw new AppError("FORBIDDEN", "Credential is disabled", { reasonCode: "CREDENTIAL_DISABLED" });
   }
 
@@ -239,4 +330,13 @@ export async function runConnectionTest(id: string): Promise<{
   });
 
   return { credential: toPublicCredential(updated), test };
+}
+
+export async function getCredentialForUser(id: string, userId: string) {
+  const credential = await prisma.providerCredential.findFirst({ where: { id, userId } });
+  if (!credential) {
+    throw new AppError("NOT_FOUND", "Credential not found", { reasonCode: "CREDENTIAL_NOT_FOUND" });
+  }
+  await assertUserOwnsResource(credential.userId);
+  return credential;
 }

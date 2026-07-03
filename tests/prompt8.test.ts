@@ -91,6 +91,7 @@ describe("profitability report", () => {
       edgeTrend: "UNKNOWN",
     });
     expect(r.profitabilityClaim).toBe("NOT_PROVEN");
+    expect(r.verifiedLivePnl).toBeNull();
   });
 });
 
@@ -421,8 +422,8 @@ describe("auto execution evaluation", () => {
 });
 
 describe("final readiness", () => {
-  it("reports auto execution as not implemented", () => {
-    const r = runFinalReadinessCheck();
+  it("reports auto execution as not implemented", async () => {
+    const r = await runFinalReadinessCheck();
     const autoExec = r.items.find((i) => i.id === "auto_execution");
     expect(autoExec?.status).toBe("FAIL");
     expect(r.items.some((i) => i.id === "profit_report" && i.status === "PASS")).toBe(true);

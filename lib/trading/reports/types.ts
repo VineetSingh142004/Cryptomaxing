@@ -10,6 +10,8 @@ export interface ProfitabilityReportInput {
   trades: LiveTradeRecord[];
   paperTrades?: LiveTradeRecord[];
   shadowTrades?: LiveTradeRecord[];
+  readOnlyAccountDataAvailable?: boolean;
+  readOnlyTradeCount?: number;
   backtestNetPnl?: number;
   benchmarkNetPnl?: number;
   randomBaselineNetPnl?: number;
@@ -70,6 +72,18 @@ export interface ProfitabilityReport {
   annualizationWarning: string | null;
   profitabilityClaim: "NOT_PROVEN" | "INSUFFICIENT_LIVE" | "RECONCILED_EDGE" | "NEGATIVE";
   disclaimers: string[];
+  /** Read-only exchange data — not verified live P&L */
+  readOnlyAccountData: {
+    available: boolean;
+    tradeCount: number;
+    note: string;
+  };
+  /** Paper simulated P&L — never real */
+  paperSimulatedPnl: number | null;
+  /** Shadow simulated P&L — never real */
+  shadowSimulatedPnl: number | null;
+  /** Verified live P&L from reconciled closed trades only */
+  verifiedLivePnl: number | null;
   generatedAt: string;
 }
 

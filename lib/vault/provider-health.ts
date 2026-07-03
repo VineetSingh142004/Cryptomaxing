@@ -171,6 +171,40 @@ export async function testProviderConnection(input: {
   if (!publicTest.success) return publicTest;
 
   if (PROVIDER_EXCHANGE.has(input.provider)) {
+    if (input.provider === "KRAKEN" && input.encryptedSecret) {
+      try {
+        const apiKey = decryptSecret(input.encryptedKey, input.encryptionMethod);
+        const apiSecret = decryptSecret(input.encryptedSecret, input.encryptionMethod);
+        const { verifyKrakenReadOnlyKey } = await import("@/lib/trading/exchange/kraken-readonly");
+        const verification = await verifyKrakenReadOnlyKey({ apiKey, apiSecret });
+        if (verification.canReadBalance) {
+          return {
+            success: verification.safeToUseForReadOnly,
+            latencyMs: publicTest.latencyMs,
+            status: verification.providerHealthy ? "ok" : "error",
+            reasonCode: verification.reasonCode,
+            message: verification.safeToUseForReadOnly
+              ? "Kraken read-only key verified via private Balance endpoint."
+              : "Kraken key decrypt OK but read-only verification incomplete.",
+          };
+        }
+        return {
+          success: false,
+          latencyMs: publicTest.latencyMs,
+          status: "error",
+          reasonCode: verification.reasonCode,
+          message: "Kraken read-only verification failed.",
+        };
+      } catch {
+        return {
+          success: false,
+          latencyMs: publicTest.latencyMs,
+          status: "error",
+          reasonCode: "READ_ONLY_API_SECRET_DECRYPT_FAILED",
+          message: "Failed to decrypt or verify Kraken credentials",
+        };
+      }
+    }
     return {
       ...publicTest,
       reasonCode: `${input.provider}_PUBLIC_OK`,

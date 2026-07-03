@@ -66,6 +66,34 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000)
 
+## Personal Local Use Setup
+
+For single-user personal use (no login required):
+
+1. Set `DATABASE_URL` to your Supabase PostgreSQL connection string.
+2. Set `APP_MODE=local` in `.env`.
+3. Set `LOCAL_OWNER_MODE=true` in `.env`.
+4. Generate `ENCRYPTION_KEY` (required before storing API keys).
+5. Optional: set `MARKET_DATA_PROVIDER=kraken` for market data checks.
+6. Run `npm run db:push`.
+7. Run `npm run dev`.
+8. Open the dashboard — you should see **Local Owner Mode**.
+9. Use **Paper Mode** first.
+10. Do **not** expose localhost publicly.
+11. Do **not** add withdrawal-enabled API keys.
+12. Do **not** enable live trading (Auto remains locked).
+
+Supabase Auth is **optional** in local owner mode. Use it before deployment or multi-user use.
+
+## Supabase Auth (optional — deployment / multi-user)
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+```
+
+When Supabase Auth is configured (and local owner mode is off), sign in at `/login`.
+
 ## ENCRYPTION_KEY (API Vault)
 
 Before storing **real** exchange API keys, set a production-safe encryption key in `.env`:
@@ -87,11 +115,11 @@ ENCRYPTION_KEY=<paste output here>
 ```
 
 **Rules:**
-- Must be base64 decoding to **32+ bytes**
+- Must be base64 decoding to **exactly 32 bytes**
 - Never commit or expose to the frontend
 - Restart `npm run dev` after changing `.env`
-- Without it: dev uses unsafe fallback; **vault writes are blocked**
-- User authentication is **NOT implemented** — vault writes stay blocked until auth exists
+- Required for vault writes even in Local Owner Mode
+- Without it: vault writes are **blocked**
 
 ## API
 

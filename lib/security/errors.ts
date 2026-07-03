@@ -64,7 +64,7 @@ function isPrismaError(error: unknown): error is Error & { name: string; code?: 
   return error instanceof Error && error.name.startsWith("PrismaClient");
 }
 
-function prismaReasonCode(error: Error & { code?: string }): string {
+function prismaReasonCode(error: Error & { code?: string; meta?: { target?: string[] } }): string {
   const msg = error.message;
   if (msg.includes("Can't reach database server") || error.name === "PrismaClientInitializationError") {
     return "DB_CONNECTION_FAILED";
@@ -75,20 +75,26 @@ function prismaReasonCode(error: Error & { code?: string }): string {
   if (error.code === "P1001") {
     return "DB_CONNECTION_FAILED";
   }
-  return "DATABASE_ERROR";
+  if (error.code === "P2002") {
+    return "UNIQUE_CONSTRAINT_FAILED";
+  }
+  return "DATABASE_WRITE_FAILED";
 }
 
-function safePrismaMessage(error: Error): string {
+function safePrismaMessage(error: Error & { code?: string }): string {
   if (error.message.includes("Can't reach database server")) {
     return "Database connection failed — check DATABASE_URL and restart the dev server after changing .env";
   }
-  if (error.message.includes("does not exist")) {
-    return "Database tables missing — run: npm run db:push";
+  if (error.message.includes("does not exist") || error.code === "P2021") {
+    return "Database write failed — run: npm run db:push";
+  }
+  if (error.code === "P2002") {
+    return "A credential with this label already exists for your account";
   }
   if (error.message.includes("sslmode") || error.message.includes("SSL")) {
     return "Supabase connection requires sslmode=require in DATABASE_URL";
   }
-  return "Database error — see server logs for details";
+  return "Database write failed — run npm run db:push and restart the dev server";
 }
 
 export function toErrorResponse(error: unknown): {
@@ -120,7 +126,7 @@ export function toErrorResponse(error: unknown): {
         message: safePrismaMessage(error),
         reasonCode,
       },
-      statusCode: 503,
+      statusCode: reasonCode === "UNIQUE_CONSTRAINT_FAILED" ? 409 : 503,
     };
   }
 
@@ -128,7 +134,13 @@ export function toErrorResponse(error: unknown): {
     error: {
       code: "INTERNAL_ERROR",
       message: "An unexpected error occurred",
+      reasonCode: "UNKNOWN_VAULT_SAVE_ERROR",
     },
     statusCode: 500,
   };
+}
+
+export function apiErrorJson(error: unknown): { body: { error: ReturnType<typeof toErrorResponse>["error"] }; statusCode: number } {
+  const { error: errBody, statusCode } = toErrorResponse(error);
+  return { body: { error: errBody }, statusCode };
 }

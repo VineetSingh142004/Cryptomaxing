@@ -160,6 +160,14 @@ export interface ProviderCredentialPublic {
   canWithdraw: boolean;
   permissionDetected: boolean;
   permissionReasonCode: string | null;
+  permissionSelfAttestation: {
+    noWithdrawalPermission: boolean;
+    noTradingPermission: boolean;
+    readOnlyConfirmed: boolean;
+    ipWhitelistConfirmed: boolean;
+    confirmedAt: string;
+  } | null;
+  lastReadOnlyVerifiedAt: string | null;
   lastConnectionTestAt: string | null;
   lastConnectionStatus: string | null;
   lastHealthCheckAt: string | null;

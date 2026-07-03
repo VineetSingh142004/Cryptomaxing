@@ -21,6 +21,9 @@ model User {
   auditLogs        AuditLog[]
   alerts           Alert[]
   providerCredentials ProviderCredential[]
+  paperEvidenceRuns PaperEvidenceRun[]
+  paperSignals      PaperSignal[]
+  paperForwardTrades PaperTrade[]
 
   @@map("users")
 }
@@ -129,7 +132,6 @@ model Asset {
   orderBooks       OrderBook[]
   signals          Signal[]
   shadowTrades     ShadowTrade[]
-  paperTrades      PaperTrade[]
   tradeCards       TradeCard[]
 
   @@map("assets")
@@ -274,7 +276,6 @@ model StrategyVariant {
   parameterSets      ParameterSet[]
   signals            Signal[]
   shadowTrades       ShadowTrade[]
-  paperTrades        PaperTrade[]
   tradeCards         TradeCard[]
   promotionEvents    StrategyPromotionEvent[]
   demotionEvents     StrategyDemotionEvent[]
@@ -569,30 +570,182 @@ model ShadowTrade {
   @@map("shadow_trades")
 }
 
+// ─── Paper-Forward Evidence ──────────────────────────────────────────────────
+
+enum PaperTradeSide {
+  LONG
+  SHORT
+  NO_TRADE
+}
+
+enum PaperTradeStatus {
+  OPEN
+  CLOSED
+  EXPIRED
+  CANCELLED
+  NO_TRADE
+}
+
+enum PaperTradeResult {
+  WIN
+  LOSS
+  BREAKEVEN
+  OPEN
+  NO_TRADE
+}
+
+model PaperEvidenceRun {
+  id                      String    @id @default(cuid())
+  userId                  String    @map("user_id")
+  status                  String
+  symbols                 String[]
+  marketDataReady         Boolean   @default(false) @map("market_data_ready")
+  actions                 Json      @default("[]")
+  errorCount              Int       @default(0) @map("error_count")
+  universeSize            Int?      @map("universe_size")
+  scannedSymbolCount      Int?      @map("scanned_symbol_count")
+  rankedCandidateCount    Int?      @map("ranked_candidate_count")
+  evaluatedCandidateCount Int?      @map("evaluated_candidate_count")
+  tradesOpened            Int?      @map("trades_opened")
+  tradesUpdated           Int?      @map("trades_updated")
+  tradesClosed            Int?      @map("trades_closed")
+  noTradeCount            Int?      @map("no_trade_count")
+  successfulFetches       Int?      @map("successful_fetches")
+  failedFetches           Int?      @map("failed_fetches")
+  averageSpreadBps        Decimal?  @map("average_spread_bps") @db.Decimal(12, 6)
+  staleSymbolCount        Int?      @map("stale_symbol_count")
+  scanSummary             Json?     @map("scan_summary")
+  scannerMode             String?   @map("scanner_mode")
+  dataSources             String[]  @default([]) @map("data_sources")
+  coinsDiscovered         Int?      @map("coins_discovered")
+  coinsEvaluated          Int?      @map("coins_evaluated")
+  watchlistCount          Int?      @map("watchlist_count")
+  highVolCount            Int?      @map("high_vol_count")
+  startedAt               DateTime  @map("started_at")
+  completedAt             DateTime? @map("completed_at")
+  createdAt               DateTime  @default(now()) @map("created_at")
+
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signals    PaperSignal[]
+  candidates PaperScanCandidate[]
+
+  @@index([userId, startedAt])
+  @@map("paper_evidence_runs")
+}
+
+model PaperSignal {
+  id           String         @id @default(cuid())
+  runId        String         @map("run_id")
+  userId       String         @map("user_id")
+  symbol       String
+  side         PaperTradeSide
+  strategyName String         @map("strategy_name")
+  confidence   Decimal?       @db.Decimal(8, 6)
+  reason       String
+  noTrade      Boolean        @default(false) @map("no_trade")
+  marketPrice  Decimal?       @map("market_price") @db.Decimal(24, 12)
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  run   PaperEvidenceRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trade PaperTrade?
+
+  @@index([runId])
+  @@index([userId, createdAt])
+  @@map("paper_signals")
+}
+
 model PaperTrade {
-  id           String   @id @default(cuid())
-  variantId    String   @map("variant_id")
-  assetId      String   @map("asset_id")
-  direction    String
-  entryPrice   Decimal  @map("entry_price") @db.Decimal(24, 12)
-  exitPrice    Decimal? @map("exit_price") @db.Decimal(24, 12)
-  size         Decimal  @db.Decimal(24, 12)
-  leverage     Decimal? @db.Decimal(8, 4)
-  status       String
-  assumptions  Json
-  feeModel     Json     @map("fee_model")
-  slippageModel Json    @map("slippage_model")
-  fundingCost  Decimal? @map("funding_cost") @db.Decimal(24, 12)
-  pnl          Decimal? @db.Decimal(24, 12)
-  reasonCodes  Json     @map("reason_codes")
-  openedAt     DateTime @map("opened_at")
-  closedAt     DateTime? @map("closed_at")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id                String           @id @default(cuid())
+  userId            String           @map("user_id")
+  signalId          String?          @unique @map("signal_id")
+  symbol            String
+  baseAsset         String           @map("base_asset")
+  quoteAsset        String           @map("quote_asset")
+  side              PaperTradeSide
+  strategyName      String           @map("strategy_name")
+  entryPrice        Decimal?         @map("entry_price") @db.Decimal(24, 12)
+  plannedStopLoss   Decimal?         @map("planned_stop_loss") @db.Decimal(24, 12)
+  plannedTakeProfit Decimal?         @map("planned_take_profit") @db.Decimal(24, 12)
+  simulatedSize     Decimal?         @map("simulated_size") @db.Decimal(24, 12)
+  riskAmount        Decimal?         @map("risk_amount") @db.Decimal(24, 12)
+  riskPercent       Decimal?         @map("risk_percent") @db.Decimal(8, 6)
+  status            PaperTradeStatus
+  openedAt          DateTime?        @map("opened_at")
+  closedAt          DateTime?        @map("closed_at")
+  exitPrice         Decimal?         @map("exit_price") @db.Decimal(24, 12)
+  grossPaperPnl     Decimal?         @map("gross_paper_pnl") @db.Decimal(24, 12)
+  estimatedFees     Decimal?         @map("estimated_fees") @db.Decimal(24, 12)
+  estimatedSlippage Decimal?         @map("estimated_slippage") @db.Decimal(24, 12)
+  netPaperPnl       Decimal?         @map("net_paper_pnl") @db.Decimal(24, 12)
+  result            PaperTradeResult
+  confidence        Decimal?         @db.Decimal(8, 6)
+  reason            String
+  dataSource        String           @default("kraken") @map("data_source")
+  isRealTrade       Boolean          @default(false) @map("is_real_trade")
+  isVerifiedLivePnl Boolean          @default(false) @map("is_verified_live_pnl")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
 
-  variant StrategyVariant @relation(fields: [variantId], references: [id])
-  asset   Asset           @relation(fields: [assetId], references: [id])
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signal    PaperSignal?         @relation(fields: [signalId], references: [id])
+  snapshots PaperTradeSnapshot[]
 
-  @@map("paper_trades")
+  @@index([userId, status])
+  @@index([userId, openedAt])
+  @@map("paper_forward_trades")
+}
+
+model PaperTradeSnapshot {
+  id            String   @id @default(cuid())
+  tradeId       String   @map("trade_id")
+  markPrice     Decimal  @map("mark_price") @db.Decimal(24, 12)
+  unrealizedPnl Decimal? @map("unrealized_pnl") @db.Decimal(24, 12)
+  capturedAt    DateTime @map("captured_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  trade PaperTrade @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+
+  @@index([tradeId, capturedAt])
+  @@map("paper_trade_snapshots")
+}
+
+model PaperScanCandidate {
+  id                           String   @id @default(cuid())
+  runId                        String   @map("run_id")
+  userId                       String   @map("user_id")
+  symbol                       String
+  source                       String   @default("kraken")
+  exchange                     String   @default("kraken")
+  price                        Decimal? @db.Decimal(24, 12)
+  spreadBps                    Decimal? @map("spread_bps") @db.Decimal(12, 6)
+  volume24hUsd                 Decimal? @map("volume_24h_usd") @db.Decimal(24, 12)
+  change24hPct                 Decimal? @map("change_24h_pct") @db.Decimal(12, 6)
+  marketCap                    Decimal? @map("market_cap") @db.Decimal(24, 12)
+  riskTier                     String?  @map("risk_tier")
+  momentumScore                Decimal? @map("momentum_score") @db.Decimal(12, 6)
+  volumeSpikeScore             Decimal? @map("volume_spike_score") @db.Decimal(12, 6)
+  volatilityScore              Decimal? @map("volatility_score") @db.Decimal(12, 6)
+  liquidityScore               Decimal? @map("liquidity_score") @db.Decimal(12, 6)
+  spreadScore                  Decimal? @map("spread_score") @db.Decimal(12, 6)
+  trendScore                   Decimal? @map("trend_score") @db.Decimal(12, 6)
+  opportunityScore             Decimal? @map("opportunity_score") @db.Decimal(12, 6)
+  dataQualityScore             Decimal? @map("data_quality_score") @db.Decimal(12, 6)
+  riskPenalty                  Decimal? @map("risk_penalty") @db.Decimal(12, 6)
+  pumpRiskPenalty              Decimal? @map("pump_risk_penalty") @db.Decimal(12, 6)
+  tradableOnConfiguredExchange Boolean  @default(true) @map("tradable_on_configured_exchange")
+  rank                         Int?
+  action                       String
+  reasonCode                   String   @map("reason_code")
+  reasonText                   String   @map("reason_text")
+  createdAt                    DateTime @default(now()) @map("created_at")
+
+  run PaperEvidenceRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, rank])
+  @@index([runId, opportunityScore])
+  @@index([runId, riskTier])
+  @@map("paper_scan_candidates")
 }
 
 model TradeCard {
@@ -1232,6 +1385,11 @@ model ProviderCredential {
   lastHealthCheckAt       DateTime?         @map("last_health_check_at")
   lastHealthStatus        String?           @map("last_health_status")
   lastLatencyMs           Int?              @map("last_latency_ms")
+  permissionSelfAttestation Json?           @map("permission_self_attestation")
+  lastReadOnlyVerifiedAt  DateTime?         @map("last_readonly_verified_at")
+  readonlyVerificationResult Json?          @map("readonly_verification_result")
+  lastKrakenNonce         String?           @map("last_kraken_nonce")
+  disabledAt              DateTime?         @map("disabled_at")
   createdAt               DateTime          @default(now()) @map("created_at")
   updatedAt               DateTime          @updatedAt @map("updated_at")
 

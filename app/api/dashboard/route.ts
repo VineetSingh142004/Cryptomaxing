@@ -1,20 +1,27 @@
 import { NextResponse } from "next/server";
 import { getOrCreateModeState } from "@/lib/trading/mode-service";
-import { evaluateAutoUnlock, defaultAutoUnlockInput } from "@/lib/trading/auto";
+import { evaluateAutoUnlock, buildAutoUnlockInput } from "@/lib/trading/auto";
 import { runSameDayRealityCheck } from "@/lib/trading/reality";
 import { runFinalReadinessCheck } from "@/lib/trading/readiness";
+import { buildNextStepsChecklist } from "@/lib/trading/dashboard/next-steps";
 import { getWorkerRegistrySummary, DEPLOYMENT_SERVICES } from "@/workers";
 import { getRedisConnectionInfo } from "@/lib/config/redis";
 import { APP_VERSION } from "@/lib/config/constants";
 import { getEncryptionStatusPublic, getVaultWritePolicy } from "@/lib/security/vault-policy";
 import { getAuthStatus } from "@/lib/security/auth";
+import { getMarketDataProviderStatus } from "@/lib/trading/paper/safe-check";
+import { getAccountStatus } from "@/lib/trading/exchange/account-service";
+import { getPaperStatus, getPaperEvidenceStats } from "@/lib/trading/paper/evidence-service";
+import { resolveUserId } from "@/lib/security/auth";
 import { toErrorResponse } from "@/lib/security/errors";
 import { logger } from "@/lib/logger";
 
 export async function GET() {
   try {
     const mode = await getOrCreateModeState();
-    const unlock = evaluateAutoUnlock(defaultAutoUnlockInput());
+    const auth = await getAuthStatus();
+    const unlockInput = await buildAutoUnlockInput();
+    const unlock = evaluateAutoUnlock(unlockInput);
     const reality = runSameDayRealityCheck({
       evidenceLevel: 0,
       todayProofAvailable: false,
@@ -29,19 +36,54 @@ export async function GET() {
       strategyDegraded: false,
       statisticallyMeaningful: false,
     });
-    const readiness = runFinalReadinessCheck();
+    const readiness = await runFinalReadinessCheck();
     const encryption = getEncryptionStatusPublic();
-    const auth = getAuthStatus();
-    const vaultPolicy = getVaultWritePolicy();
+    const vaultPolicy = await getVaultWritePolicy();
+    const marketData = getMarketDataProviderStatus();
+
+    let paperEvidence: Awaited<ReturnType<typeof getPaperStatus>> | null = null;
+    let paperForwardStatus: "NOT_CONFIGURED" | "COLLECTING" | "PASS" = "NOT_CONFIGURED";
+    let paperForwardNote: string | undefined;
+    try {
+      const userId = await resolveUserId();
+      const stats = await getPaperEvidenceStats(userId);
+      paperEvidence = await getPaperStatus();
+      paperForwardStatus = stats.evidenceStatus;
+      paperForwardNote = stats.evidenceNote;
+    } catch {
+      paperEvidence = null;
+    }
+
+    const nextSteps = await buildNextStepsChecklist({
+      authStatus: auth.status,
+      authConfigured: auth.configured,
+      modePaperEnabled: mode.paper_enabled,
+      autoExecutionEnabled: unlock.autoExecutionEnabled,
+      sameDayEvidenceExists: reality.evidencePresent.length > 0,
+      paperForwardEvidenceStatus: paperForwardStatus,
+      paperForwardEvidenceNote: paperForwardNote,
+    });
+
+    let exchangeAccountReadiness: Awaited<ReturnType<typeof getAccountStatus>> | null = null;
+    if (auth.status === "AUTH_READY" || auth.status === "LOCAL_OWNER_MODE") {
+      try {
+        exchangeAccountReadiness = await getAccountStatus();
+      } catch {
+        exchangeAccountReadiness = null;
+      }
+    }
 
     return NextResponse.json({
       version: APP_VERSION,
       mode,
+      auth,
       auto_unlock: {
         decision: unlock.decision,
         auto_execution_enabled: unlock.autoExecutionEnabled,
         failed_gates: unlock.failedGateIds.slice(0, 10),
-        failed_gate_count: unlock.failedGateIds.length,
+        failed_gate_count: unlock.failedGateCount,
+        next_gate_to_fix: unlock.nextGateToFix,
+        safest_next_action: unlock.safestNextAction,
         scaling_allowed: unlock.scalingAllowed,
       },
       why_waiting: unlock.decision === "WAIT" ? unlock.reasonCodes : [],
@@ -58,28 +100,26 @@ export async function GET() {
       evidence_level: 0,
       money_protected: null,
       api_health: "UNKNOWN",
-      auth,
       encryption: {
         production_safe: encryption.productionSafe,
         vault_writes_allowed: vaultPolicy.allowed,
         block_reasons: vaultPolicy.blockReasons,
         warning: encryption.warning,
+        reason_code: encryption.reasonCode,
       },
-      next_steps: [
-        "Paper Mode is safe to test — no real orders are placed",
-        "Auto execution is locked — do not enable live trading",
-        "Live trading is NOT ready — execution engine not wired",
-        vaultPolicy.allowed
-          ? "Vault writes allowed — still use read-only keys only until auth exists"
-          : "Do NOT add real API keys until ENCRYPTION_KEY is set and auth is implemented",
-        "Recommended now: Paper Mode + same-day shadow evidence only",
-      ],
+      next_steps_checklist: nextSteps.items,
+      next_steps: nextSteps.messages,
+      market_data: marketData,
+      exchange_account_readiness: exchangeAccountReadiness,
+      local_owner_mode: auth.localOwnerMode ?? auth.status === "LOCAL_OWNER_MODE",
       paper_mode: {
         safe_to_test: true,
         places_real_orders: false,
         shows_verified_pnl: false,
         note: "Paper profit is simulated — never labeled as real profit",
+        status: "PAPER_MODE_READY",
       },
+      paper_evidence: paperEvidence,
       disclaimers: [
         "Dashboard shows system state — not fabricated P&L",
         "Paper/shadow profits are never labeled as real profit",

@@ -2,20 +2,34 @@ import type { ReadinessCheckItem } from "@/lib/trading/readiness/types";
 import { getEncryptionStatusPublic } from "@/lib/security/vault-policy";
 import { getAuthStatus } from "@/lib/security/auth";
 
-export function runFinalReadinessCheck(): {
+export async function runFinalReadinessCheck(): Promise<{
   ready: boolean;
   items: ReadinessCheckItem[];
   summary: { passed: number; failed: number; partial: number };
-} {
+  auth: Awaited<ReturnType<typeof getAuthStatus>>;
+}> {
   const encryption = getEncryptionStatusPublic();
-  const auth = getAuthStatus();
+  const auth = await getAuthStatus();
+
+  const authStatus: ReadinessCheckItem["status"] =
+    auth.status === "LOCAL_OWNER_MODE"
+      ? "PASS"
+      : auth.status === "LOCAL_OWNER_MODE_UNSAFE_IN_PRODUCTION"
+        ? "BLOCKED"
+        : auth.status === "AUTH_READY"
+          ? "PASS"
+          : auth.status === "AUTH_NOT_CONFIGURED"
+            ? "NOT_CONFIGURED"
+            : auth.status === "AUTH_REQUIRED"
+              ? "PARTIAL"
+              : "FAIL";
 
   const items: ReadinessCheckItem[] = [
     check("project_builds", "Project builds from scratch", "PARTIAL", "Run npm run build locally"),
     check("paper_mode", "Paper mode exists", "PASS"),
     check("manual_mode", "Manual mode exists", "PASS"),
     check("auto_gated", "Auto selectable but gated", "PASS"),
-    check("api_vault", "API vault works", "PASS"),
+    check("api_vault", "API vault works", authStatus === "PASS" && encryption.productionSafe ? "PASS" : "PARTIAL"),
     check("no_withdrawal", "No-withdrawal check exists", "PARTIAL", "Permission detection NOT_IMPLEMENTED on exchange"),
     check("ledger", "Ledger works", "PASS"),
     check("market_data", "Market data works", "PASS"),
@@ -62,9 +76,7 @@ export function runFinalReadinessCheck(): {
       "encryption_key",
       "Production-safe ENCRYPTION_KEY",
       encryption.productionSafe ? "PASS" : "PARTIAL",
-      encryption.productionSafe
-        ? undefined
-        : "Set ENCRYPTION_KEY (openssl rand -base64 32) — vault writes blocked until set",
+      encryption.productionSafe ? undefined : encryption.safeMessage,
     ),
     check("workers", "Worker registry defined", "PARTIAL", "Redis queue not wired"),
     check("auto_bypass", "Auto cannot bypass anything", "PASS"),
@@ -76,15 +88,15 @@ export function runFinalReadinessCheck(): {
     check("auto_execution", "Auto execution (live orders)", "FAIL", "NOT_IMPLEMENTED — by design"),
     check("live_private_api", "Live exchange private API", "FAIL", "NOT_IMPLEMENTED"),
     check("redis", "Redis queue/cache", "FAIL", "NOT_IMPLEMENTED"),
-    check("auth", "User authentication", "FAIL", auth.status),
+    check("auth", "User authentication / local owner mode", authStatus, auth.message),
   ];
 
   const passed = items.filter((i) => i.status === "PASS").length;
   const failed = items.filter((i) => i.status === "FAIL").length;
-  const partial = items.filter((i) => i.status === "PARTIAL").length;
-  const ready = failed === 0 && partial <= 5;
+  const partial = items.filter((i) => i.status === "PARTIAL" || i.status === "NOT_CONFIGURED").length;
+  const ready = failed === 0 && partial <= 8;
 
-  return { ready, items, summary: { passed, failed, partial } };
+  return { ready, items, summary: { passed, failed, partial }, auth };
 }
 
 function check(

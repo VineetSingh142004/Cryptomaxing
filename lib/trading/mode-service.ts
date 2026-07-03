@@ -2,6 +2,8 @@ import type { TradingMode, ModeState } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { writeAuditLog } from "@/lib/logger/audit";
 import { AppError } from "@/lib/security/errors";
+import { resolveUserId, isAuthConfigured, getCurrentUser } from "@/lib/security/auth";
+import { isLocalOwnerModeAllowed } from "@/lib/security/local-owner";
 import {
   DEFAULT_SYSTEM_USER_EMAIL,
   type AutoBlockReason,
@@ -12,6 +14,18 @@ import { evaluateAutoExecution } from "@/lib/trading/mode-evaluation";
 export { evaluateAutoExecution } from "@/lib/trading/mode-evaluation";
 
 let cachedSystemUserId: string | null = null;
+
+const DEFAULT_PAPER_MODE_RESPONSE: ModeResponse = {
+  current_mode: "paper",
+  paper_enabled: true,
+  manual_enabled: true,
+  auto_visible: true,
+  auto_selected: false,
+  auto_execution_enabled: false,
+  auto_blocked_reason: "PROOF_GATES_NOT_IMPLEMENTED",
+  auto_state: "locked",
+  last_changed_at: new Date().toISOString(),
+};
 
 async function getOrCreateSystemUser(): Promise<string> {
   if (cachedSystemUserId) return cachedSystemUserId;
@@ -29,6 +43,21 @@ async function getOrCreateSystemUser(): Promise<string> {
   return user.id;
 }
 
+async function getModeUserId(requireAuth = false): Promise<string | null> {
+  if (isLocalOwnerModeAllowed()) {
+    return resolveUserId();
+  }
+  if (isAuthConfigured()) {
+    const user = await getCurrentUser();
+    if (user) return user.id;
+    if (requireAuth) {
+      return resolveUserId({ requireAuth: true }).then((id) => id);
+    }
+    return null;
+  }
+  return getOrCreateSystemUser();
+}
+
 function toModeResponse(state: ModeState): ModeResponse {
   return {
     current_mode: state.currentMode.toLowerCase() as ModeResponse["current_mode"],
@@ -44,7 +73,10 @@ function toModeResponse(state: ModeState): ModeResponse {
 }
 
 export async function getOrCreateModeState(): Promise<ModeResponse> {
-  const userId = await getOrCreateSystemUser();
+  const userId = await getModeUserId(false);
+  if (!userId) {
+    return DEFAULT_PAPER_MODE_RESPONSE;
+  }
 
   let state = await prisma.modeState.findUnique({ where: { userId } });
 
@@ -97,7 +129,12 @@ export async function setMode(input: {
   changedBy?: string;
   ipAddress?: string;
 }): Promise<ModeResponse> {
-  const userId = await getOrCreateSystemUser();
+  const userId = await getModeUserId(true);
+  if (!userId && !isLocalOwnerModeAllowed()) {
+    throw new AppError("UNAUTHORIZED", "Sign in required to change mode", {
+      reasonCode: "AUTH_REQUIRED",
+    });
+  }
   const modeMap: Record<string, TradingMode> = {
     paper: "PAPER",
     manual: "MANUAL",

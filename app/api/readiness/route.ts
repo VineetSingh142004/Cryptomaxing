@@ -5,7 +5,8 @@ import { logger } from "@/lib/logger";
 
 export async function GET() {
   try {
-    return NextResponse.json(runFinalReadinessCheck());
+    const readiness = await runFinalReadinessCheck();
+    return NextResponse.json(readiness);
   } catch (error) {
     logger.error({ err: error }, "GET /api/readiness failed");
     const { error: body, statusCode } = toErrorResponse(error);
