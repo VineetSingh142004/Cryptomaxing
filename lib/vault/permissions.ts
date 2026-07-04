@@ -30,6 +30,8 @@ export async function detectPermissions(
     case "COINGECKO":
     case "DEX_SCREENER":
     case "GECKOTERMINAL":
+    case "DEFILLAMA":
+    case "LUNARCRUSH":
     case "GOPLUS":
       return {
         canRead: true,

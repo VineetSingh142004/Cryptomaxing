@@ -15,6 +15,11 @@ const envSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().optional(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().optional(),
   MARKET_DATA_PROVIDER: z.enum(["kraken", "coingecko", "none"]).optional(),
+  COINGECKO_API_KEY: z.string().optional(),
+  DEXSCREENER_ENABLED: z.enum(["true", "false"]).optional(),
+  DEFILLAMA_ENABLED: z.enum(["true", "false"]).optional(),
+  LUNARCRUSH_API_KEY: z.string().optional(),
+  LUNARCRUSH_ENABLED: z.enum(["true", "false"]).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

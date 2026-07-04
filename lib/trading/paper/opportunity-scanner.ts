@@ -1,5 +1,7 @@
 import type { NormalizedMarketSnapshot } from "@/lib/trading/data/types";
 import { assessDataQuality } from "@/lib/trading/data/quality-gates";
+import type { ExchangeAvailabilityResult } from "@/lib/trading/exchange/availability-types";
+import { isConfirmedTradable, isUnconfirmedTradable } from "@/lib/trading/exchange/availability-types";
 import { PAPER_CONFIG, type PaperReasonCode } from "@/lib/trading/paper/paper-config";
 import {
   SCANNER_CONFIG,
@@ -9,6 +11,8 @@ import {
 } from "@/lib/trading/paper/scanner-config";
 import type { UniverseTickerRow } from "@/lib/trading/paper/kraken-universe";
 import type { TieredCandidate } from "@/lib/trading/paper/wide-universe";
+import { computeWeightedScore, emptyScoreBreakdown, type ScoreBreakdown } from "@/lib/trading/paper/scoring";
+import { evaluateTradeSelection } from "@/lib/trading/paper/trade-selection";
 
 export type CandidateAction = "OPEN_TRADE" | "NO_TRADE" | "SKIPPED" | "WATCHLIST_ONLY";
 
@@ -30,11 +34,15 @@ export interface ScanCandidate {
   riskPenalty: number;
   pumpRiskPenalty: number;
   opportunityScore: number;
+  scoreBreakdown: ScoreBreakdown;
   riskTier: RiskTier;
   shortTermReturnPct: number;
   breakoutScore: number;
   source: string;
   tradableOnConfiguredExchange: boolean;
+  availability: ExchangeAvailabilityResult;
+  change7dPct?: number | null;
+  coinName?: string;
   action: CandidateAction;
   actionType: CandidateActionType;
   reasonCode: PaperReasonCode | string;
@@ -130,16 +138,33 @@ export function buildScanCandidateFromTiered(input: {
 }): ScanCandidate {
   const { tiered } = input;
   const snapshot = input.snapshot;
+  const availability = tiered.availability;
+  const unconfirmed = isUnconfirmedTradable(availability);
+  const confirmed = isConfirmedTradable(availability);
 
   if (!snapshot) {
-    const changeScore = clamp(Math.abs(tiered.change24hPct) * 2.5);
-    const volScore = clamp(Math.log10(Math.max(tiered.volume24hUsd, 1)) * 11);
-    const liquidityScore = volScore;
     const pumpRisk = computePumpRiskPenalty(tiered.change24hPct, tiered.volume24hUsd, tiered.spreadBps ?? 999);
     const riskPenalty = computeRiskPenalty(tiered.riskTier, tiered.spreadBps ?? 999, tiered.volume24hUsd);
-    const opportunityScore = clamp(changeScore * 0.35 + volScore * 0.35 + liquidityScore * 0.2 - pumpRisk * 0.1 - riskPenalty * 0.1);
+    const scoreBreakdown = computeWeightedScore({
+      volume24hUsd: tiered.volume24hUsd,
+      change24hPct: tiered.change24hPct,
+      change1hPct: tiered.change1hPct,
+      marketCapUsd: tiered.marketCapUsd,
+      spreadBps: tiered.spreadBps ?? 50,
+      momentumPct: (tiered.change1hPct ?? 0) || tiered.change24hPct * 0.05,
+      volatilityPct: Math.abs(tiered.change24hPct),
+      shortTermReturnPct: tiered.change1hPct ?? 0,
+      breakoutScore: 0,
+      volumeSpikeScore: 50,
+      dataQualityScore: 60,
+      riskTier: tiered.riskTier,
+      availability,
+      pumpRiskPenalty: pumpRisk,
+      riskTierPenalty: riskPenalty,
+    });
+    const opportunityScore = scoreBreakdown.finalScore;
 
-    if (!tiered.tradableOnConfiguredExchange) {
+    if (!confirmed) {
       return {
         symbol: tiered.symbol,
         price: tiered.price,
@@ -147,26 +172,34 @@ export function buildScanCandidateFromTiered(input: {
         volume24hUsd: tiered.volume24hUsd,
         change24hPct: tiered.change24hPct,
         change1hPct: tiered.change1hPct,
+        change7dPct: tiered.change7dPct ?? null,
         marketCapUsd: tiered.marketCapUsd,
-        momentumScore: changeScore,
+        momentumScore: scoreBreakdown.momentumScore,
         volumeSpikeScore: 50,
-        volatilityScore: changeScore,
-        liquidityScore,
-        spreadScore: 50,
-        trendScore: changeScore,
-        dataQualityScore: 60,
+        volatilityScore: scoreBreakdown.volatilityScore,
+        liquidityScore: scoreBreakdown.liquidityScore,
+        spreadScore: scoreBreakdown.spreadScore,
+        trendScore: scoreBreakdown.trendStrengthScore,
+        dataQualityScore: scoreBreakdown.dataQualityScore,
         riskPenalty,
         pumpRiskPenalty: pumpRisk,
         opportunityScore,
+        scoreBreakdown,
         riskTier: tiered.riskTier,
         shortTermReturnPct: tiered.change1hPct ?? 0,
         breakoutScore: 0,
         source: tiered.source,
         tradableOnConfiguredExchange: false,
+        availability,
+        coinName: tiered.name,
         action: "WATCHLIST_ONLY",
         actionType: "WATCHLIST_ONLY",
-        reasonCode: "NOT_TRADABLE_ON_EXCHANGE",
-        reasonText: "High-momentum coin found, but not tradable on configured exchange.",
+        reasonCode: unconfirmed ? "EXCHANGE_AVAILABILITY_UNKNOWN" : "NOT_TRADABLE_ON_EXCHANGE",
+        reasonText:
+          availability.availabilityNote ??
+          (unconfirmed
+            ? "Detected by CoinGecko/DexScreener, but not confirmed tradable on connected exchange."
+            : "High-momentum coin found, but not tradable on configured exchange."),
       };
     }
 
@@ -178,21 +211,24 @@ export function buildScanCandidateFromTiered(input: {
       change24hPct: tiered.change24hPct,
       change1hPct: tiered.change1hPct,
       marketCapUsd: tiered.marketCapUsd,
-      momentumScore: changeScore,
+      momentumScore: scoreBreakdown.momentumScore,
       volumeSpikeScore: 50,
-      volatilityScore: changeScore,
-      liquidityScore,
-      spreadScore: 50,
-      trendScore: changeScore,
-      dataQualityScore: 60,
+      volatilityScore: scoreBreakdown.volatilityScore,
+      liquidityScore: scoreBreakdown.liquidityScore,
+      spreadScore: scoreBreakdown.spreadScore,
+      trendScore: scoreBreakdown.trendStrengthScore,
+      dataQualityScore: scoreBreakdown.dataQualityScore,
       riskPenalty,
       pumpRiskPenalty: pumpRisk,
       opportunityScore,
+      scoreBreakdown,
       riskTier: tiered.riskTier,
       shortTermReturnPct: tiered.change1hPct ?? 0,
       breakoutScore: 0,
       source: tiered.source,
       tradableOnConfiguredExchange: true,
+      availability,
+      coinName: tiered.name,
       action: "SKIPPED",
       actionType: "SKIPPED",
       reasonCode: "MARKET_DATA_FAILED",
@@ -219,6 +255,22 @@ export function buildScanCandidate(input: {
   const marketCapUsd = tiered?.marketCapUsd ?? null;
   const riskTier = tiered?.riskTier ?? "ALT_LIQUID";
   const tradable = tiered?.tradableOnConfiguredExchange ?? true;
+  const availability =
+    tiered?.availability ??
+    ({
+      listedOnKraken: tradable ? "YES" : "UNKNOWN",
+      krakenSpotAvailable: tradable ? "YES" : "UNKNOWN",
+      krakenMarginAvailable: "UNKNOWN",
+      krakenFuturesAvailable: "UNKNOWN",
+      usLeverageAvailable: "UNKNOWN",
+      availablePairs: [],
+      bestExchange: tradable ? "kraken" : "unknown",
+      recommendedAction: tradable ? "SPOT_ONLY" : "UNKNOWN",
+      evidenceSource: "snapshot_fallback",
+      checkedAt: new Date().toISOString(),
+      confidence: "low",
+      availabilityNote: null,
+    } satisfies ExchangeAvailabilityResult);
   const source = tiered?.source ?? "kraken";
   const maxSpread = maxSpreadForTier(riskTier);
 
@@ -232,43 +284,45 @@ export function buildScanCandidate(input: {
   const ret = shortTermReturn(snapshot.candles5m);
   const breakout = breakoutScore(snapshot.candles5m);
   const volSpike = volumeSpikeFromSnapshot(snapshot);
-
-  const momentumScore = clamp(Math.abs(mom) * 20 + Math.abs(change24hPct) * 1.5);
-  const volatilityScore =
-    riskTier === "EXTREME_RISK" || riskTier === "HIGH_VOLATILITY"
-      ? clamp(Math.abs(change24hPct) * 2 + volPct * 8)
-      : volPct >= 0.3 && volPct <= 8
-        ? clamp(100 - Math.abs(volPct - 2) * 15)
-        : clamp(volPct * 10);
-  const liquidityScore = clamp(Math.log10(Math.max(volume24hUsd, 1)) * 11);
-  const spreadScore = clamp(100 - spreadBps * (riskTier === "MAJOR" ? 2.5 : 1.5));
-  const trendScore = clamp(Math.abs(ret) * 20 + Math.abs(change1hPct ?? 0) * 3);
   const pumpRiskPenalty = computePumpRiskPenalty(change24hPct, volume24hUsd, spreadBps);
   const riskPenalty = computeRiskPenalty(riskTier, spreadBps, volume24hUsd);
 
-  const opportunityScore = clamp(
-    momentumScore * 0.2 +
-      volumeSpikeScore(volSpike) * 0.15 +
-      liquidityScore * 0.2 +
-      spreadScore * 0.15 +
-      volatilityScore * 0.1 +
-      trendScore * 0.1 +
-      dataQualityScore * 0.05 +
-      breakout * 0.05 -
-      riskPenalty * 0.15 -
-      pumpRiskPenalty * 0.1,
-  );
+  const scoreBreakdown = computeWeightedScore({
+    volume24hUsd,
+    change24hPct,
+    change1hPct,
+    marketCapUsd,
+    spreadBps,
+    momentumPct: mom,
+    volatilityPct: volPct,
+    shortTermReturnPct: ret,
+    breakoutScore: breakout,
+    volumeSpikeScore: volSpike,
+    dataQualityScore,
+    riskTier,
+    availability,
+    pumpRiskPenalty,
+    riskTierPenalty: riskPenalty,
+  });
+
+  const opportunityScore = scoreBreakdown.finalScore;
 
   let reasonCode: PaperReasonCode | string = "SCORE_TOO_LOW";
   let reasonText = "Awaiting evaluation";
   let action: CandidateAction = "SKIPPED";
   let actionType: CandidateActionType = "SKIPPED";
 
-  if (!tradable) {
+  if (!isConfirmedTradable(availability)) {
     action = "WATCHLIST_ONLY";
     actionType = "WATCHLIST_ONLY";
-    reasonCode = "NOT_TRADABLE_ON_EXCHANGE";
-    reasonText = "High-momentum coin found, but not tradable on configured exchange.";
+    reasonCode = isUnconfirmedTradable(availability)
+      ? "EXCHANGE_AVAILABILITY_UNKNOWN"
+      : "NOT_TRADABLE_ON_EXCHANGE";
+    reasonText =
+      availability.availabilityNote ??
+      (isUnconfirmedTradable(availability)
+        ? "Detected by CoinGecko/DexScreener, but not confirmed tradable on connected exchange."
+        : "High-momentum coin found, but not tradable on configured exchange.");
   } else if (!ticker.bid || !ticker.ask) {
     reasonCode = "MARKET_DATA_FAILED";
     reasonText = "Missing bid/ask";
@@ -289,43 +343,52 @@ export function buildScanCandidate(input: {
     reasonCode = "SPREAD_TOO_WIDE";
     reasonText = `Spread ${spreadBps.toFixed(1)} bps exceeds tier max ${maxSpread}`;
     actionType = "REJECTED";
-  } else if (liquidityScore < PAPER_CONFIG.minLiquidityScore && riskTier === "MAJOR") {
-    reasonCode = "LIQUIDITY_TOO_LOW";
-    reasonText = `Liquidity score ${liquidityScore.toFixed(0)} below ${PAPER_CONFIG.minLiquidityScore}`;
-    actionType = "REJECTED";
-  } else if (
-    riskTier === "MAJOR" &&
-    volPct > 6 &&
-    Math.abs(change24hPct) < SCANNER_CONFIG.min24hChangePct
-  ) {
-    reasonCode = "VOLATILITY_TOO_LOW";
-    reasonText = `Volatility ${volPct.toFixed(2)}% too low — no movement`;
-    actionType = "REJECTED";
-  } else if (pumpRiskPenalty >= 40) {
-    reasonCode = "PUMP_RISK_TOO_HIGH";
-    reasonText = `Suspicious pump behavior — penalty ${pumpRiskPenalty.toFixed(0)}`;
-    actionType = "REJECTED";
-  } else if (opportunityScore < PAPER_CONFIG.minOpportunityScore && riskTier === "MAJOR") {
-    reasonCode = "SCORE_TOO_LOW";
-    reasonText = `Opportunity score ${opportunityScore.toFixed(0)} below ${PAPER_CONFIG.minOpportunityScore}`;
-    actionType = "REJECTED";
-  } else if (Math.abs(change24hPct) < SCANNER_CONFIG.min24hChangePct && riskTier !== "MAJOR" && mom < 0.05) {
-    reasonCode = "VOLATILITY_TOO_LOW";
-    reasonText = `24h change ${change24hPct.toFixed(1)}% below min ${SCANNER_CONFIG.min24hChangePct}%`;
-    actionType = "REJECTED";
   } else {
-    action = "OPEN_TRADE";
-    actionType = "OPEN_PAPER_TRADE";
-    reasonCode = "TRADE_OPENED";
-    reasonText =
-      riskTier === "EXTREME_RISK"
-        ? `EXTREME_RISK_PAPER_ONLY — score ${opportunityScore.toFixed(0)}, 24h ${change24hPct.toFixed(1)}%`
-        : `Opportunity score ${opportunityScore.toFixed(0)} — ${riskTier}, 24h ${change24hPct.toFixed(1)}%`;
+    const stopPct = PAPER_CONFIG.stopLossBps / 10_000;
+    const tpPct = PAPER_CONFIG.takeProfitBps / 10_000;
+    const hasExitPlan = tpPct / stopPct >= 1.05;
+    const selection = evaluateTradeSelection({
+      breakdown: scoreBreakdown,
+      availability,
+      riskTier,
+      spreadBps,
+      volume24hUsd,
+      change24hPct,
+      momentumPct: mom,
+      hasExitPlan,
+    });
+    if (selection.shouldOpen) {
+      action = "OPEN_TRADE";
+      actionType = "OPEN_PAPER_TRADE";
+      reasonCode = selection.reasonCode;
+      reasonText = selection.reasonText;
+    } else if (selection.recommendation === "AVOID") {
+      action = "NO_TRADE";
+      actionType = "REJECTED";
+      reasonCode = selection.reasonCode;
+      reasonText = selection.reasonText;
+    } else if (!isConfirmedTradable(availability)) {
+      action = "WATCHLIST_ONLY";
+      actionType = "WATCHLIST_ONLY";
+      reasonCode = selection.reasonCode;
+      reasonText = selection.reasonText;
+    } else {
+      action = "NO_TRADE";
+      actionType = "REJECTED";
+      reasonCode = selection.reasonCode;
+      reasonText = selection.reasonText;
+    }
   }
 
   if (action !== "OPEN_TRADE" && action !== "WATCHLIST_ONLY") {
     action = "NO_TRADE";
   }
+
+  const momentumScore = scoreBreakdown.momentumScore;
+  const volatilityScore = scoreBreakdown.volatilityScore;
+  const liquidityScore = scoreBreakdown.liquidityScore;
+  const spreadScore = scoreBreakdown.spreadScore;
+  const trendScore = scoreBreakdown.trendStrengthScore;
 
   return {
     symbol: snapshot.symbol,
@@ -345,11 +408,15 @@ export function buildScanCandidate(input: {
     riskPenalty,
     pumpRiskPenalty,
     opportunityScore,
+    scoreBreakdown,
     riskTier,
     shortTermReturnPct: ret,
     breakoutScore: breakout,
     source,
-    tradableOnConfiguredExchange: tradable,
+    tradableOnConfiguredExchange: isConfirmedTradable(availability),
+    availability,
+    change7dPct: tiered?.change7dPct ?? null,
+    coinName: tiered?.name,
     action,
     actionType,
     reasonCode,

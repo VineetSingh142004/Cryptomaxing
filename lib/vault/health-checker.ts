@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import { testPublicProvider, testProviderConnection } from "@/lib/vault/provider-health";
 import type { ProviderHealthResult } from "@/lib/vault/types";
+import { isExchangeCategory } from "@/lib/vault/categories";
 import { PROVIDER_METADATA } from "@/lib/vault/types";
 
 export async function checkAllProviderHealth(): Promise<ProviderHealthResult[]> {
@@ -54,7 +55,7 @@ export async function checkAllProviderHealth(): Promise<ProviderHealthResult[]> 
 
   for (const [provider, meta] of Object.entries(PROVIDER_METADATA)) {
     if (credProviders.has(provider as typeof credentials[0]["provider"])) continue;
-    if (meta.category === "exchange") continue;
+    if (isExchangeCategory(meta.providerCategory)) continue;
 
     const test = await testPublicProvider(provider as typeof credentials[0]["provider"]);
     results.push({

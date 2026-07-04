@@ -1,4 +1,6 @@
 import type { ScanCandidate } from "@/lib/trading/paper/opportunity-scanner";
+import { calculatePaperPositionSize } from "@/lib/trading/paper/capital-allocation";
+import { evaluatePaperLeverage } from "@/lib/trading/paper/paper-leverage";
 import {
   SCANNER_CONFIG,
   riskPercentForTier,
@@ -21,6 +23,13 @@ export interface ControlledActiveStrategyResult {
   riskPercent: number;
   riskTier: RiskTier;
   warning?: string;
+  simulatedLeverage?: number;
+  leverageReason?: string;
+  capitalAllocationPct?: number;
+  leverageAvailable?: string;
+  usLeverageAvailable?: string;
+  marketType?: string;
+  simulatedLabel?: "SIMULATED_PAPER_ONLY";
 }
 
 function tierStopLossBps(tier: RiskTier): number {
@@ -144,12 +153,41 @@ export function evaluateControlledActiveStrategy(
     };
   }
 
-  const riskAmount = SCANNER_CONFIG.simulatedAccountUsd * (riskPercent / 100);
-  const stopDistance = mid * stopPct;
-  const simulatedSize = stopDistance > 0 ? riskAmount / stopDistance : null;
-
   const plannedStopLoss = decision === "LONG" ? mid * (1 - stopPct) : mid * (1 + stopPct);
   const plannedTakeProfit = decision === "LONG" ? mid * (1 + tpPct) : mid * (1 - tpPct);
+
+  const confidence =
+    candidate.scoreBreakdown?.confidenceLevel === "HIGH"
+      ? 0.9
+      : candidate.scoreBreakdown?.confidenceLevel === "MEDIUM"
+        ? 0.75
+        : candidate.opportunityScore / 100;
+
+  const leverage = evaluatePaperLeverage({
+    availability: candidate.availability,
+    confidence,
+    opportunityScore: candidate.opportunityScore,
+    liquidityScore: candidate.liquidityScore,
+    volatilityPct: candidate.volatilityScore / 10,
+    stopDistancePct: stopPct * 100,
+    riskTier,
+    hasClearStopLoss: true,
+  });
+
+  const sizing = calculatePaperPositionSize({
+    entryPrice: mid,
+    stopDistancePct: stopPct * 100,
+    confidence,
+    opportunityScore: candidate.opportunityScore,
+    riskTier,
+    volatilityPct: candidate.volatilityScore / 10,
+    liquidityScore: candidate.liquidityScore,
+    leverage: leverage.leverageUsed,
+    downsideRiskScore: candidate.pumpRiskPenalty + candidate.riskPenalty,
+  });
+
+  const riskAmount = sizing.riskAmountUsd;
+  const simulatedSize = sizing.simulatedSize > 0 ? sizing.simulatedSize : null;
 
   const warning =
     riskTier === "EXTREME_RISK"
@@ -160,17 +198,24 @@ export function evaluateControlledActiveStrategy(
 
   return {
     decision,
-    confidence: Math.min(0.95, candidate.opportunityScore / 100),
-    reason: `${decision} — ${riskTier}, score ${candidate.opportunityScore.toFixed(0)}, 24h ${candidate.change24hPct.toFixed(1)}%`,
+    confidence: Math.min(0.95, confidence),
+    reason: `${decision} — ${riskTier}, score ${candidate.opportunityScore.toFixed(0)}, 24h ${candidate.change24hPct.toFixed(1)}% | ${sizing.sizingReason}`,
     reasonCode: "TRADE_OPENED",
     entryPrice: mid,
     plannedStopLoss,
     plannedTakeProfit,
     simulatedSize,
     riskAmount,
-    riskPercent,
+    riskPercent: sizing.riskPercent,
     riskTier,
     warning,
+    simulatedLeverage: leverage.leverageUsed,
+    leverageReason: leverage.leverageReason,
+    capitalAllocationPct: sizing.capitalAllocationPct,
+    leverageAvailable: leverage.leverageAvailable,
+    usLeverageAvailable: leverage.usLeverageAvailable,
+    marketType: leverage.marketType,
+    simulatedLabel: "SIMULATED_PAPER_ONLY",
   };
 }
 

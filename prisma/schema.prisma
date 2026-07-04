@@ -621,13 +621,26 @@ model PaperEvidenceRun {
   coinsEvaluated          Int?      @map("coins_evaluated")
   watchlistCount          Int?      @map("watchlist_count")
   highVolCount            Int?      @map("high_vol_count")
+  reasonCode              String?   @map("reason_code")
+  reasonText              String?   @map("reason_text")
+  candidatesStored        Int       @default(0) @map("candidates_stored")
+  signalsStored           Int       @default(0) @map("signals_stored")
+  snapshotsStored         Int       @default(0) @map("snapshots_stored")
+  maxOpenTrades           Int?      @map("max_open_trades")
+  maxOpenTradesReached    Boolean   @default(false) @map("max_open_trades_reached")
+  missedOpportunitiesStored Int?    @map("missed_opportunities_stored")
+  rotationsPerformed      Int?      @map("rotations_performed")
+  runWarnings             Json      @default("[]") @map("run_warnings")
+  runErrors               Json      @default("[]") @map("run_errors")
   startedAt               DateTime  @map("started_at")
   completedAt             DateTime? @map("completed_at")
   createdAt               DateTime  @default(now()) @map("created_at")
 
-  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  signals    PaperSignal[]
-  candidates PaperScanCandidate[]
+  user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signals             PaperSignal[]
+  candidates          PaperScanCandidate[]
+  missedOpportunities PaperMissedOpportunity[]
+  rotationEvents      PaperRotationEvent[]
 
   @@index([userId, startedAt])
   @@map("paper_evidence_runs")
@@ -746,6 +759,53 @@ model PaperScanCandidate {
   @@index([runId, opportunityScore])
   @@index([runId, riskTier])
   @@map("paper_scan_candidates")
+}
+
+model PaperMissedOpportunity {
+  id                    String   @id @default(cuid())
+  runId                 String   @map("run_id")
+  userId                String   @map("user_id")
+  symbol                String
+  score                 Decimal? @db.Decimal(12, 6)
+  riskTier              String?  @map("risk_tier")
+  price                 Decimal? @db.Decimal(24, 12)
+  reason                String
+  wouldHaveOpened       Boolean  @default(true) @map("would_have_opened")
+  blockedByOpenTradeIds Json     @default("[]") @map("blocked_by_open_trade_ids")
+  followUpPrice         Decimal? @map("follow_up_price") @db.Decimal(24, 12)
+  simulatedMissedPnl    Decimal? @map("simulated_missed_pnl") @db.Decimal(24, 12)
+  isRealTrade           Boolean  @default(false) @map("is_real_trade")
+  isVerifiedLivePnl     Boolean  @default(false) @map("is_verified_live_pnl")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  run PaperEvidenceRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([userId, createdAt])
+  @@index([symbol])
+  @@map("paper_missed_opportunities")
+}
+
+model PaperRotationEvent {
+  id                 String   @id @default(cuid())
+  runId              String   @map("run_id")
+  userId             String   @map("user_id")
+  rotatedOutTradeId  String   @map("rotated_out_trade_id")
+  rotatedOutSymbol   String   @map("rotated_out_symbol")
+  rotatedInSymbol    String   @map("rotated_in_symbol")
+  exitSimulatedPnl   Decimal? @map("exit_simulated_pnl") @db.Decimal(24, 12)
+  scoreAdvantage     Decimal? @map("score_advantage") @db.Decimal(12, 6)
+  exitPnlBps         Decimal? @map("exit_pnl_bps") @db.Decimal(12, 6)
+  reason             String
+  isRealTrade        Boolean  @default(false) @map("is_real_trade")
+  isVerifiedLivePnl  Boolean  @default(false) @map("is_verified_live_pnl")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  run PaperEvidenceRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([userId, createdAt])
+  @@map("paper_rotation_events")
 }
 
 model TradeCard {
@@ -1335,6 +1395,16 @@ model Alert {
 
 // ─── API Vault (Prompt 2) ────────────────────────────────────────────────────
 
+enum ProviderCategory {
+  EXCHANGE
+  MARKET_DATA
+  DEX_DATA
+  DEFI_DATA
+  SOCIAL_SENTIMENT
+  NEWS_DATA
+  OTHER
+}
+
 enum ProviderType {
   KRAKEN
   COINBASE_ADVANCED
@@ -1344,6 +1414,8 @@ enum ProviderType {
   COINGECKO
   DEX_SCREENER
   GECKOTERMINAL
+  DEFILLAMA
+  LUNARCRUSH
   GOPLUS
 }
 

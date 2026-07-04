@@ -7,6 +7,8 @@ export interface KrakenPairInfo {
   baseAsset: string;
   quoteAsset: string;
   wsname: string;
+  status: string;
+  hasMarginLeverage: boolean;
 }
 
 export interface UniverseTickerRow {
@@ -70,23 +72,27 @@ function parseWsname(wsname: string): { base: string; quote: string } | null {
   return { base: normalizeBase(parts[0]), quote: normalizeQuote(parts[1]) };
 }
 
-async function krakenFetch<T>(url: string): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = (await res.json()) as { error?: string[]; result?: T };
-    if (json.error?.length) throw new Error(json.error.join(", "));
-    return json.result as T;
-  } finally {
-    clearTimeout(timeout);
-  }
+import {
+  formatKrakenFetchError,
+  KrakenFetchError,
+  resilientKrakenFetch,
+} from "@/lib/trading/paper/kraken-fetch";
+
+async function krakenFetch<T>(url: string, endpoint: string): Promise<T> {
+  const { data } = await resilientKrakenFetch<T>({
+    url,
+    endpoint,
+    timeoutMs: 15_000,
+    maxAttempts: 2,
+    backoffMs: 500,
+  });
+  return data;
 }
 
 export async function fetchKrakenSpotPairs(): Promise<KrakenPairInfo[]> {
   const result = await krakenFetch<AssetPairsResult>(
     "https://api.kraken.com/0/public/AssetPairs",
+    "AssetPairs",
   );
 
   const allowedQuotes = new Set(PAPER_CONFIG.includeQuotes);
@@ -116,6 +122,9 @@ export async function fetchKrakenSpotPairs(): Promise<KrakenPairInfo[]> {
       baseAsset: parsed.base,
       quoteAsset: parsed.quote,
       wsname,
+      status: info.status ?? "online",
+      hasMarginLeverage:
+        (info.leverage_buy?.length ?? 0) > 0 || (info.leverage_sell?.length ?? 0) > 0,
     });
   }
 
@@ -123,8 +132,13 @@ export async function fetchKrakenSpotPairs(): Promise<KrakenPairInfo[]> {
 }
 
 export async function fetchKrakenAllTickers(): Promise<TickerResult> {
-  return krakenFetch<TickerResult>("https://api.kraken.com/0/public/Ticker");
+  return krakenFetch<TickerResult>(
+    "https://api.kraken.com/0/public/Ticker",
+    "Ticker",
+  );
 }
+
+export { KrakenFetchError, formatKrakenFetchError };
 
 export function buildTickerRows(
   pairs: KrakenPairInfo[],

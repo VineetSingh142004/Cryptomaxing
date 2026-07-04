@@ -32,9 +32,18 @@ import {
 
 } from "@/lib/vault/store";
 
+import {
+
+  assertVaultSaveInput,
+
+  safeVaultSaveLogContext,
+
+} from "@/lib/vault/save-validation";
+
 import { PROVIDER_METADATA, PROVIDER_TYPES } from "@/lib/vault/types";
 
-import { assertVaultSaveInput, safeVaultSaveLogContext } from "@/lib/vault/save-validation";
+import { getProviderEnvSettingsPublic } from "@/lib/vault/provider-settings";
+import { buildPublicProviderVaultCards } from "@/lib/vault/public-provider-vault";
 
 
 
@@ -94,6 +103,10 @@ export async function GET() {
 
       local_owner_mode: vaultPolicy.localOwnerMode,
 
+      provider_env: getProviderEnvSettingsPublic(),
+
+      public_providers: buildPublicProviderVaultCards(),
+
       safety_notes: [
 
         "Vault writes are allowed in Local Owner Mode only after ENCRYPTION_KEY is valid",
@@ -128,7 +141,7 @@ const createSchema = z.object({
 
   label: z.string().min(1).max(100),
 
-  apiKey: z.string().min(1),
+  apiKey: z.string().optional(),
 
   apiSecret: z.string().optional(),
 
@@ -166,7 +179,7 @@ function mapZodVaultError(parsed: z.SafeParseError<unknown>): AppError {
 
     return new AppError("VALIDATION_ERROR", "API key is required", {
 
-      reasonCode: "API_KEY_MISSING",
+      reasonCode: "PROVIDER_API_KEY_MISSING",
 
       details: parsed.error.flatten(),
 
@@ -234,7 +247,7 @@ export async function POST(request: NextRequest) {
 
       label: parsed.data.label,
 
-      apiKey: parsed.data.apiKey,
+      apiKey: parsed.data.apiKey ?? "",
 
       apiSecret: parsed.data.apiSecret,
 
@@ -256,7 +269,7 @@ export async function POST(request: NextRequest) {
 
           label: parsed.data.label,
 
-          apiKey: parsed.data.apiKey,
+          apiKey: parsed.data.apiKey ?? "",
 
           apiSecret: parsed.data.apiSecret,
 
@@ -284,7 +297,7 @@ export async function POST(request: NextRequest) {
 
       label: parsed.data.label,
 
-      apiKey: parsed.data.apiKey,
+      apiKey: parsed.data.apiKey ?? "",
 
       apiSecret: parsed.data.apiSecret,
 

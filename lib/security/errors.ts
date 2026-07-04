@@ -134,7 +134,10 @@ export function toErrorResponse(error: unknown): {
     error: {
       code: "INTERNAL_ERROR",
       message: "An unexpected error occurred",
-      reasonCode: "UNKNOWN_VAULT_SAVE_ERROR",
+      reasonCode:
+        error instanceof ReferenceError
+          ? "VAULT_SAVE_HANDLER_ERROR"
+          : "UNKNOWN_VAULT_SAVE_ERROR",
     },
     statusCode: 500,
   };

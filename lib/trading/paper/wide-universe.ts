@@ -1,6 +1,7 @@
 import {
   buildPaperSymbolUniverse,
   fetchKrakenSpotPairs,
+  formatKrakenFetchError,
   type KrakenPairInfo,
   type UniverseTickerRow,
 } from "@/lib/trading/paper/kraken-universe";
@@ -8,6 +9,17 @@ import {
   discoverCoinsFromCoinGecko,
   type DiscoveryCoin,
 } from "@/lib/trading/data/providers/coingecko";
+import { fetchDefiLlamaSummary } from "@/lib/trading/data/providers/defillama";
+import { fetchDexScreenerSummary } from "@/lib/trading/data/providers/dexscreener";
+import type { DefiLlamaSummary } from "@/lib/trading/data/providers/defillama";
+import { loadKrakenPairIndex } from "@/lib/trading/exchange/availability-service";
+import { isConfirmedTradable, isUnconfirmedTradable } from "@/lib/trading/exchange/availability-types";
+import type { ExchangeAvailabilityResult } from "@/lib/trading/exchange/availability-types";
+import {
+  finalizePipelineStats,
+  computeCoinsFilteredOut,
+  type ScanPipelineStats,
+} from "@/lib/trading/paper/scan-pipeline";
 import {
   SCANNER_CONFIG,
   classifyRiskTier,
@@ -25,11 +37,13 @@ export interface TieredCandidate {
   volume24hUsd: number;
   change24hPct: number;
   change1hPct: number | null;
+  change7dPct?: number | null;
   marketCapUsd: number | null;
   spreadBps: number | null;
   riskTier: RiskTier;
   source: DiscoverySource;
   tradableOnConfiguredExchange: boolean;
+  availability: ExchangeAvailabilityResult;
   krakenPair?: string;
   coinGeckoId?: string;
   name?: string;
@@ -45,6 +59,11 @@ export interface WideUniverseResult {
   coingeckoError?: string;
   krakenStatus: "ok" | "unavailable";
   krakenError?: string;
+  krakenFallbackUsed?: boolean;
+  dexscreenerStatus: ProviderStatus;
+  defillamaStatus: ProviderStatus;
+  lunarcrushStatus: ProviderStatus;
+  defiGlobalSummary: DefiLlamaSummary | null;
   coinsDiscovered: number;
   krakenUniverseSize: number;
   topGainers: TieredCandidate[];
@@ -54,9 +73,29 @@ export interface WideUniverseResult {
   watchlistOnlyCandidates: TieredCandidate[];
   pairMap: Map<string, KrakenPairInfo>;
   allKrakenSymbols: Set<string>;
+  pipeline: ScanPipelineStats;
 }
 
 let cachedWide: { result: WideUniverseResult; fetchedAt: number } | null = null;
+
+export type ProviderStatus = "ok" | "unavailable" | "skipped" | "disabled";
+
+function krakenNativeAvailability(symbol: string): ExchangeAvailabilityResult {
+  return {
+    listedOnKraken: "YES",
+    krakenSpotAvailable: "YES",
+    krakenMarginAvailable: "UNKNOWN",
+    krakenFuturesAvailable: "UNKNOWN",
+    usLeverageAvailable: "UNKNOWN",
+    availablePairs: [symbol],
+    bestExchange: "kraken",
+    recommendedAction: "SPOT_ONLY",
+    evidenceSource: "kraken_ticker_universe",
+    checkedAt: new Date().toISOString(),
+    confidence: "high",
+    availabilityNote: null,
+  };
+}
 
 function toTieredFromKraken(row: UniverseTickerRow, change24hPct = 0): TieredCandidate {
   const riskTier = classifyRiskTier({
@@ -77,6 +116,7 @@ function toTieredFromKraken(row: UniverseTickerRow, change24hPct = 0): TieredCan
     riskTier,
     source: "kraken",
     tradableOnConfiguredExchange: true,
+    availability: krakenNativeAvailability(row.symbol),
     krakenPair: row.krakenPair,
     tickerRow: row,
   };
@@ -102,8 +142,9 @@ function toTieredFromDiscovery(coin: DiscoveryCoin, krakenPairMap: Map<string, K
     spreadBps: krakenInfo ? null : null,
     riskTier,
     source: "coingecko",
-    tradableOnConfiguredExchange: coin.tradableOnKraken,
-    krakenPair: krakenInfo?.krakenPair,
+    tradableOnConfiguredExchange: isConfirmedTradable(coin.availability),
+    availability: coin.availability,
+    krakenPair: krakenInfo?.krakenPair ?? coin.krakenSymbol,
     coinGeckoId: coin.coinGeckoId,
     name: coin.name,
   };
@@ -171,24 +212,56 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
   const mode = SCANNER_CONFIG.mode;
   const dataSources = SCANNER_CONFIG.dataSources;
 
-  let krakenUniverse: Awaited<ReturnType<typeof buildPaperSymbolUniverse>>;
+  let krakenUniverse: Awaited<ReturnType<typeof buildPaperSymbolUniverse>> | null = null;
   let krakenStatus: WideUniverseResult["krakenStatus"] = "ok";
   let krakenError: string | undefined;
+  let krakenFallbackUsed = false;
+  let pairMap = new Map<string, KrakenPairInfo>();
+  let allKrakenSymbols = new Set<string>();
+  let krakenCandidates: TieredCandidate[] = [];
+  let krakenUniverseSize = 0;
 
   try {
     krakenUniverse = await buildPaperSymbolUniverse({
       maxSymbols: SCANNER_CONFIG.maxDiscoveryCoins,
       bypassCache: options?.bypassCache,
     });
+    pairMap = krakenUniverse.pairMap;
+    allKrakenSymbols = await loadKrakenPairIndex({ bypassCache: options?.bypassCache }).then((idx) =>
+      idx.allSpotSymbols(),
+    );
+    krakenCandidates = krakenUniverse.topByVolume.map((r) => toTieredFromKraken(r));
+    krakenUniverseSize = krakenUniverse.universeSize;
   } catch (err) {
     krakenStatus = "unavailable";
-    krakenError = err instanceof Error ? err.message : "Kraken universe fetch failed";
-    throw new Error(`KRAKEN_UNAVAILABLE: ${krakenError}`);
+    krakenError = formatKrakenFetchError(err);
+    krakenFallbackUsed = dataSources.includes("coingecko");
   }
 
-  const allKrakenSymbols = new Set(krakenUniverse.symbols);
-  const pairMap = krakenUniverse.pairMap;
-  const krakenCandidates = krakenUniverse.topByVolume.map((r) => toTieredFromKraken(r));
+  const pairIndex = await loadKrakenPairIndex({ bypassCache: options?.bypassCache });
+  if (krakenStatus === "unavailable") {
+    allKrakenSymbols = pairIndex.allSpotSymbols();
+    pairMap = new Map();
+  }
+
+  let dexscreenerStatus: ProviderStatus =
+    process.env.DEXSCREENER_ENABLED === "false" ? "disabled" : "skipped";
+  let defillamaStatus: ProviderStatus = "skipped";
+  let lunarcrushStatus: ProviderStatus =
+    process.env.LUNARCRUSH_ENABLED === "true" ? "skipped" : "disabled";
+
+  const defiSummary = await fetchDefiLlamaSummary().catch(() => null);
+  if (defiSummary?.status === "ok") defillamaStatus = "ok";
+  else if (defiSummary?.status === "disabled") defillamaStatus = "disabled";
+  else if (process.env.DEFILLAMA_ENABLED !== "false") defillamaStatus = "unavailable";
+
+  if (process.env.DEXSCREENER_ENABLED === "false") {
+    dexscreenerStatus = "disabled";
+  } else {
+    const dexProbe = await fetchDexScreenerSummary("ETH").catch(() => null);
+    if (dexProbe && dexProbe.status !== "unavailable") dexscreenerStatus = "ok";
+    else dexscreenerStatus = "unavailable";
+  }
 
   let cgGainers: TieredCandidate[] = [];
   let cgVolume: TieredCandidate[] = [];
@@ -197,11 +270,12 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
     ? "unavailable"
     : "skipped";
   let coingeckoError: string | undefined;
-  const activeDataSources: DiscoverySource[] = ["kraken"];
+  const activeDataSources: DiscoverySource[] =
+    krakenStatus === "ok" ? ["kraken"] : krakenFallbackUsed ? [] : [];
 
   if (dataSources.includes("coingecko")) {
     try {
-      const discovered = await discoverCoinsFromCoinGecko(allKrakenSymbols);
+      const discovered = await discoverCoinsFromCoinGecko(pairIndex);
       cgGainers = discovered.topGainers.map((c) => toTieredFromDiscovery(c, pairMap));
       cgVolume = discovered.topVolume.map((c) => toTieredFromDiscovery(c, pairMap));
       cgAll = discovered.allDiscovered.map((c) => toTieredFromDiscovery(c, pairMap));
@@ -214,7 +288,43 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
   }
 
   const merged = dedupeByBase([...cgAll, ...krakenCandidates]);
+
+  if (merged.length === 0) {
+    if (krakenStatus === "unavailable" && coingeckoStatus === "unavailable") {
+      throw new Error(
+        `MARKET_DATA_FAILED: Kraken unavailable (${krakenError ?? "unknown"}); CoinGecko unavailable (${coingeckoError ?? "unknown"})`,
+      );
+    }
+    if (krakenStatus === "unavailable" && coingeckoStatus === "skipped") {
+      throw new Error(`KRAKEN_UNAVAILABLE: ${krakenError ?? "Kraken universe fetch failed"}`);
+    }
+    throw new Error("UNIVERSE_EMPTY: No candidates discovered from available providers");
+  }
+  const preFilterCount = merged.length;
   const filtered = filterByMode(merged, mode);
+  const removedByBasicMode = preFilterCount - filtered.length;
+
+  const removedByExchangeAvailability = filtered.filter(
+    (c) => c.availability.krakenSpotAvailable === "NO",
+  ).length;
+  const removedByUsAvailability = filtered.filter(
+    (c) => c.availability.usLeverageAvailable === "NO",
+  ).length;
+  const removedByVolume = filtered.filter(
+    (c) => c.volume24hUsd < SCANNER_CONFIG.min24hVolumeUsd,
+  ).length;
+  const removedByLiquidity = filtered.filter(
+    (c) => c.volume24hUsd < SCANNER_CONFIG.min24hVolumeUsd * 2 && c.riskTier === "MAJOR",
+  ).length;
+  const removedByMarketCapRisk = filtered.filter(
+    (c) => (c.marketCapUsd ?? 0) > 0 && (c.marketCapUsd ?? 0) < 1_000_000 && c.riskTier === "EXTREME_RISK",
+  ).length;
+
+  const passedBasicFilters = filtered.filter(
+    (c) =>
+      c.volume24hUsd >= SCANNER_CONFIG.min24hVolumeUsd &&
+      (c.tradableOnConfiguredExchange || isUnconfirmedTradable(c.availability)),
+  ).length;
 
   const topGainers = [...filtered]
     .sort((a, b) => b.change24hPct - a.change24hPct)
@@ -240,11 +350,47 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
 
   const watchlistOnlyCandidates = dedupeBySymbol(
     filtered.filter(
-      (c) => !c.tradableOnConfiguredExchange && Math.abs(c.change24hPct) >= SCANNER_CONFIG.min24hChangePct,
+      (c) =>
+        (!c.tradableOnConfiguredExchange || isUnconfirmedTradable(c.availability)) &&
+        Math.abs(c.change24hPct) >= SCANNER_CONFIG.min24hChangePct,
     ),
   )
     .sort((a, b) => Math.abs(b.change24hPct) - Math.abs(a.change24hPct))
     .slice(0, SCANNER_CONFIG.topCandidates);
+
+  const pipeline = finalizePipelineStats({
+    coinsDiscovered: merged.length,
+    coinsScanned: merged.length,
+    coinsFilteredOut: computeCoinsFilteredOut({
+      coinsDiscovered: merged.length,
+      passedBasicFilters,
+      removedByLiquidity,
+      removedByVolume,
+      removedByMarketCapRisk,
+      removedByExchangeAvailability,
+      removedByUsAvailability: removedByUsAvailability + removedByBasicMode,
+    }),
+    removedByLiquidity,
+    removedByVolume,
+    removedByMarketCapRisk,
+    removedByExchangeAvailability,
+    removedByUsAvailability: removedByUsAvailability + removedByBasicMode,
+    passedBasicFilters,
+    deepEvaluated: 0,
+    deepEvaluationLimit: SCANNER_CONFIG.maxEvaluatedCoins,
+    deepEvaluationLimitReason: `Deep evaluation capped at ${SCANNER_CONFIG.maxEvaluatedCoins} highest-quality tradable coins (SCANNER_MAX_EVALUATED_COINS) after scanning all ${merged.length} discovered coins`,
+    finalCandidates: 0,
+    finalPaperTradeCandidates: tradablePaperCandidates.length,
+    watchOnlyCandidates: watchlistOnlyCandidates.length,
+    selectionExplanation: `All ${merged.length} coins scanned from providers; ${passedBasicFilters} passed basic filters; top ${Math.min(tradablePaperCandidates.length, SCANNER_CONFIG.maxEvaluatedCoins)} tradable coins deep-evaluated by score`,
+    providerStatus: {
+      kraken: krakenStatus,
+      coingecko: coingeckoStatus,
+      dexscreener: dexscreenerStatus,
+      defillama: defillamaStatus,
+      lunarcrush: lunarcrushStatus,
+    },
+  });
 
   const result: WideUniverseResult = {
     scannerMode: mode,
@@ -255,8 +401,13 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
     coingeckoError,
     krakenStatus,
     krakenError,
+    krakenFallbackUsed,
+    dexscreenerStatus,
+    defillamaStatus,
+    lunarcrushStatus,
+    defiGlobalSummary: defiSummary,
     coinsDiscovered: merged.length,
-    krakenUniverseSize: krakenUniverse.universeSize,
+    krakenUniverseSize,
     topGainers: cgGainers.length > 0 ? cgGainers.slice(0, 20) : topGainers.slice(0, 20),
     topVolumeMovers: cgVolume.length > 0 ? cgVolume.slice(0, 20) : topVolumeMovers.slice(0, 20),
     highVolatilityCandidates,
@@ -264,6 +415,7 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
     watchlistOnlyCandidates,
     pairMap,
     allKrakenSymbols,
+    pipeline,
   };
 
   cachedWide = { result, fetchedAt: now };

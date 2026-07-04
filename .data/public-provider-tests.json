@@ -1,0 +1,28 @@
+{
+  "DEX_SCREENER": {
+    "provider": "DEX_SCREENER",
+    "success": true,
+    "reasonCode": "DEX_SCREENER_OK",
+    "message": "DexScreener public search endpoint reachable.",
+    "status": "ok",
+    "endpointTested": "https://api.dexscreener.com/latest/dex/search?q=ETH",
+    "latencyMs": 374,
+    "keyUsed": false,
+    "publicFallbackUsed": true,
+    "rateLimitStatus": null,
+    "testedAt": "2026-07-04T01:54:34.509Z"
+  },
+  "DEFILLAMA": {
+    "provider": "DEFILLAMA",
+    "success": true,
+    "reasonCode": "DEFILLAMA_OK",
+    "message": "DeFiLlama chains and protocols endpoints reachable.",
+    "status": "ok",
+    "endpointTested": "https://api.llama.fi/protocols",
+    "latencyMs": 381,
+    "keyUsed": false,
+    "publicFallbackUsed": true,
+    "rateLimitStatus": null,
+    "testedAt": "2026-07-04T01:55:06.146Z"
+  }
+}

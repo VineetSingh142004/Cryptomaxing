@@ -12,6 +12,8 @@ import { getAuthStatus } from "@/lib/security/auth";
 import { getMarketDataProviderStatus } from "@/lib/trading/paper/safe-check";
 import { getAccountStatus } from "@/lib/trading/exchange/account-service";
 import { getPaperStatus, getPaperEvidenceStats } from "@/lib/trading/paper/evidence-service";
+import { buildScannerProviderStatus, vaultHintsFromCredentials } from "@/lib/trading/paper/scanner-provider-status";
+import { listProviderCredentials } from "@/lib/vault/store";
 import { resolveUserId } from "@/lib/security/auth";
 import { toErrorResponse } from "@/lib/security/errors";
 import { logger } from "@/lib/logger";
@@ -44,12 +46,18 @@ export async function GET() {
     let paperEvidence: Awaited<ReturnType<typeof getPaperStatus>> | null = null;
     let paperForwardStatus: "NOT_CONFIGURED" | "COLLECTING" | "PASS" = "NOT_CONFIGURED";
     let paperForwardNote: string | undefined;
+    let scannerVaultConnections: ReturnType<typeof vaultHintsFromCredentials> = [];
     try {
       const userId = await resolveUserId();
       const stats = await getPaperEvidenceStats(userId);
       paperEvidence = await getPaperStatus();
       paperForwardStatus = stats.evidenceStatus;
       paperForwardNote = stats.evidenceNote;
+      try {
+        scannerVaultConnections = vaultHintsFromCredentials(await listProviderCredentials(userId));
+      } catch {
+        scannerVaultConnections = [];
+      }
     } catch {
       paperEvidence = null;
     }
@@ -120,6 +128,9 @@ export async function GET() {
         status: "PAPER_MODE_READY",
       },
       paper_evidence: paperEvidence,
+      scanner_provider_status:
+        paperEvidence?.scanner?.scannerProviderStatus ??
+        buildScannerProviderStatus({ vaultConnections: scannerVaultConnections }),
       disclaimers: [
         "Dashboard shows system state — not fabricated P&L",
         "Paper/shadow profits are never labeled as real profit",

@@ -1,7 +1,8 @@
 import type { ProviderType } from "@prisma/client";
 import { AppError } from "@/lib/security/errors";
-import { PROVIDER_METADATA } from "@/lib/vault/types";
+import { isExchangeCategory } from "@/lib/vault/categories";
 import type { DetectedPermissions } from "@/lib/vault/types";
+import { PROVIDER_METADATA, isPublicEndpointsOnlyProvider } from "@/lib/vault/types";
 
 export interface VaultSaveInput {
   provider: ProviderType;
@@ -30,9 +31,17 @@ export function assertVaultSaveInput(input: VaultSaveInput): void {
     });
   }
 
-  if (!input.apiKey?.trim()) {
+  if (isPublicEndpointsOnlyProvider(input.provider) && !input.apiKey?.trim()) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      `${meta.label} uses public endpoints. No API key needs to be saved. Use Test Connection instead.`,
+      { reasonCode: "PROVIDER_KEY_NOT_REQUIRED" },
+    );
+  }
+
+  if (meta.requiresApiKey && !input.apiKey?.trim()) {
     throw new AppError("VALIDATION_ERROR", "API key is required", {
-      reasonCode: "API_KEY_MISSING",
+      reasonCode: "PROVIDER_API_KEY_MISSING",
     });
   }
 
@@ -42,7 +51,7 @@ export function assertVaultSaveInput(input: VaultSaveInput): void {
     });
   }
 
-  if (meta.category === "exchange") {
+  if (isExchangeCategory(meta.providerCategory)) {
     const att = input.permissionSelfAttestation;
     if (!att) {
       throw new AppError(
@@ -96,7 +105,7 @@ export function safeVaultSaveLogContext(input: VaultSaveInput): Record<string, u
     apiSecretPresent: Boolean(input.apiSecret?.trim()),
     apiKeyLength: input.apiKey?.trim().length ?? 0,
     apiSecretLength: input.apiSecret?.trim().length ?? 0,
-    exchangeCategory: meta?.category === "exchange",
+    exchangeCategory: isExchangeCategory(meta.providerCategory),
     attestation: att
       ? {
           noWithdrawalPermission: att.noWithdrawalPermission,

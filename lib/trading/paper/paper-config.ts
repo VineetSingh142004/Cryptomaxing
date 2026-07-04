@@ -18,7 +18,12 @@ export type PaperReasonCode =
   | "SHORT_NOT_ALLOWED"
   | "NOT_TRADABLE_ON_EXCHANGE"
   | "PUMP_RISK_TOO_HIGH"
-  | "WATCHLIST_ONLY";
+  | "WATCHLIST_ONLY"
+  | "THESIS_INVALIDATED"
+  | "EARLY_LOSS_CUT"
+  | "MAX_TOTAL_EXPOSURE_REACHED"
+  | "DYNAMIC_CAPACITY_FULL"
+  | "CORRELATED_EXPOSURE_LIMIT";
 
 function envInt(key: string, fallback: number): number {
   const v = process.env[key]?.trim();

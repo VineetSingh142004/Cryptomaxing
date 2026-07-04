@@ -92,15 +92,114 @@ interface DashboardData {
   paper_mode?: { safe_to_test: boolean; places_real_orders: boolean; note: string };
   paper_evidence?: PaperEvidenceData | null;
   exchange_account_readiness?: ExchangeAccountReadiness | null;
+  scanner_provider_status?: {
+    providers: Array<{
+      provider: string;
+      label: string;
+      status: string;
+      enabled: boolean;
+      contributedLastRun: boolean;
+      connectionStatus: string;
+      connectionStatusLabel?: string;
+      currentRunContribution?: string;
+      currentRunReason?: string | null;
+    }>;
+    lastRunContributions: {
+      coingeckoContributed: boolean;
+      krakenContributed: boolean;
+      dexscreenerContributed: boolean;
+      defillamaContributed: boolean;
+      lunarcrushContributed: boolean;
+    } | null;
+  };
 }
 
 interface PaperEvidenceData {
   paperModeReady: boolean;
   marketDataReady: boolean;
+  paperRuns: number;
+  candidatesStored: number;
+  signalsStored: number;
+  snapshotsStored: number;
+  paperEvidenceCountTotal: number;
+  paperEvidenceCount: number;
   openPaperTrades: number;
   closedPaperTrades: number;
   noTradeSignals: number;
-  paperEvidenceCount: number;
+  maxOpenTrades: number;
+  maxOpenTradesReached: boolean;
+  availableSlots?: number;
+  newTradeOpening: string;
+  maxOpenTradesBlockReason: string | null;
+  rotationEnabled?: boolean;
+  rotationMode?: string;
+  rotationWarning?: string | null;
+  missedOpportunitiesTotal?: number;
+  openTradeCapacity?: {
+    maxOpenTrades: number;
+    openTrades: number;
+    availableSlots: number;
+    newTradeOpening: string;
+    maxOpenTradesBlockReason: string | null;
+    rotationEnabled: boolean;
+    openTradeDetails?: Array<{
+      symbol: string;
+      side: string;
+      status: string;
+      entryPrice: number | null;
+      currentPrice: number | null;
+      unrealizedSimulatedPnl: number | null;
+      ageHours: number | null;
+      plannedStopLoss: number | null;
+      plannedTakeProfit: number | null;
+      expiresAt: string | null;
+      opportunityScore: number | null;
+      riskTier: string | null;
+      rotationEligibility?: string;
+      rotationEligibilityReason?: string;
+      unrealizedPnlBps?: number | null;
+      distanceToTargetBps?: number | null;
+      nearTakeProfit?: boolean;
+      weaknessScore?: number;
+      simulatedPnlLabel: string;
+    }>;
+  };
+  missedOpportunities?: {
+    missedOpportunitiesTotal: number;
+    missedOpportunitiesThisRun: number;
+    rotationHint: string | null;
+    topMissedOpportunities: Array<{
+      symbol: string;
+      score: number | null;
+      riskTier: string | null;
+      reason: string;
+      blockedByMaxOpenTrades: boolean;
+    }>;
+  };
+  paperRotation?: {
+    rotationConfig: {
+      enabled: boolean;
+      requireProfit: boolean;
+      minScoreAdvantage: number;
+      minExitPnlBps: number;
+    };
+    rotationsTotal: number;
+    rotationsThisRun: number;
+    missedDueToNoSafeExit: number;
+    missedDueToScoreTooSmall: number;
+    rotationEvents: Array<{
+      rotatedOut: string;
+      rotatedIn: string;
+      exitSimulatedPnl: number | null;
+      scoreAdvantage: number | null;
+      reason: string;
+    }>;
+  };
+  prismaClientStale?: boolean;
+  prismaStaleMessage?: string | null;
+  historicalPrismaWarning?: string | null;
+  latestRunStatus?: string | null;
+  latestRunReasonCode?: string | null;
   lastRunAt: string | null;
   currentStatus: string;
   nextAction: string;
@@ -109,11 +208,99 @@ interface PaperEvidenceData {
   losses: number;
   breakevens: number;
   warning: string;
+  liveTradingLocked?: true;
+  autoExecutionLocked?: boolean;
+  nextSafeAction?: string;
+  tradeHistory?: {
+    rows: Array<{
+      tradeNumber: number;
+      coin: string;
+      exchange: string;
+      marketType: string;
+      leverageUsed: number;
+      entryTime: string | null;
+      exitTime: string | null;
+      entryPrice: number | null;
+      exitPrice: number | null;
+      netPnl: number | null;
+      pctGainLoss: number | null;
+      durationHours: number | null;
+      entryReason: string;
+      exitReason: string | null;
+      finalResult: string;
+      simulatedLabel: string;
+    }>;
+    summary: {
+      totalTrades: number;
+      profitableTrades: number;
+      losingTrades: number;
+      winRate: number | null;
+      netProfitLoss: number;
+      averageLeverageUsed: number | null;
+      mostTradedCoin: string | null;
+      simulatedLabel: string;
+    };
+    warning: string;
+  };
+  safetyVerification?: {
+    liveTradingLocked: true;
+    autoExecutionLocked: boolean;
+    checks: Array<{ id: string; passed: boolean; note: string }>;
+    simulatedLabel: string;
+  };
   scanner?: {
     scannerMode?: string;
     dataSources?: string[];
     coinsDiscovered?: number;
     coinsEvaluated?: number;
+    pipeline?: {
+      coinsDiscovered?: number;
+      coinsScanned?: number;
+      coinsFilteredOut?: number;
+      removedByVolume?: number;
+      removedByMarketCapRisk?: number;
+      removedByExchangeAvailability?: number;
+      removedByUsAvailability?: number;
+      passedBasicFilters?: number;
+      deepEvaluated?: number;
+      deepEvaluationLimit?: number;
+      deepEvaluationLimitReason?: string;
+      finalCandidates?: number;
+      finalPaperTradeCandidates?: number;
+      watchOnlyCandidates?: number;
+      selectionExplanation?: string;
+      providerStatus?: Record<string, string>;
+    };
+    finalCandidateOutputs?: Array<{
+      name: string;
+      symbol: string;
+      currentPrice: number;
+      volume24hUsd: number;
+      change24hPct: number;
+      change7dPct: number | null;
+      scores: {
+        momentum: number;
+        volume: number;
+        liquidity: number;
+        socialHype: number;
+        risk: number;
+        finalTotal: number;
+        confidenceLevel: string;
+        riskLevel: string;
+      };
+      availabilitySummary: {
+        krakenSpotAvailable: string;
+        krakenLeverageAvailable: string;
+        perpFuturesAvailable: string;
+        usAvailability: string;
+        bestExchange: string;
+      };
+      recommendedTradeType: string;
+      recommendedLeverage: string;
+      recommendedCapitalAllocationPct: number;
+      finalRecommendation: string;
+      simulatedLabel: string;
+    }>;
     scannerHealth?: {
       universeSize: number;
       symbolsScanned: number;
@@ -181,6 +368,17 @@ interface PaperRunResult {
   status: string;
   reasonCode?: string;
   reasonText?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  paperRunsBefore?: number;
+  paperRunsAfter?: number;
+  evidenceCountBefore?: number;
+  evidenceCountAfter?: number;
+  countDelta?: number;
+  candidatesStored?: number;
+  signalsStored?: number;
+  snapshotsStored?: number;
   latestAction: string;
   scannerMode?: string;
   dataSources?: string[];
@@ -195,6 +393,14 @@ interface PaperRunResult {
   tradesOpened?: number;
   tradesUpdated?: number;
   tradesClosed?: number;
+  openTradesBefore?: number;
+  openTradesAfter?: number;
+  maxOpenTrades?: number;
+  maxOpenTradesReached?: boolean;
+  candidateWriteFailures?: number;
+  snapshotWriteFailures?: number;
+  errors?: string[];
+  runOutcomeMessage?: string;
   noTradeCount?: number;
   topCandidates?: Array<{
     symbol: string;
@@ -239,6 +445,8 @@ interface PaperRunResult {
   closedPaperTrades: number;
   noTradeSignals: number;
   simulatedNetPnl: number;
+  portfolioSimulatedNetPnl?: number;
+  currentRunPnlDelta?: number;
   warnings: string[];
   autoUnlocked: boolean;
   liveOrdersPlaced: boolean;
@@ -258,7 +466,9 @@ export function DashboardShell() {
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [verifyResult, setVerifyResult] = useState<Record<string, unknown> | null>(null);
   const [paperRunLoading, setPaperRunLoading] = useState(false);
+  const [paperRunElapsedMs, setPaperRunElapsedMs] = useState(0);
   const [paperRunResult, setPaperRunResult] = useState<PaperRunResult | null>(null);
+  const [paperRunWarnings, setPaperRunWarnings] = useState<string[]>([]);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [paperRunError, setPaperRunError] = useState<string | null>(null);
 
@@ -302,6 +512,18 @@ export function DashboardShell() {
     void fetchDashboard();
   }, [fetchDashboard]);
 
+  useEffect(() => {
+    if (!paperRunLoading) {
+      setPaperRunElapsedMs(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setPaperRunElapsedMs(Date.now() - started);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [paperRunLoading]);
+
   async function runSafeCheck() {
     setSafeCheckLoading(true);
     try {
@@ -318,6 +540,7 @@ export function DashboardShell() {
   async function runPaperEvidenceStep() {
     setPaperRunLoading(true);
     setPaperRunError(null);
+    setPaperRunWarnings([]);
     try {
       const res = await fetch("/api/paper/run", { method: "POST" });
       const json = (await res.json()) as PaperRunResult & {
@@ -333,19 +556,20 @@ export function DashboardShell() {
       }
 
       setPaperRunResult(json);
+      setPaperRunWarnings(json.warnings ?? []);
 
       if (json.status === "FAILED") {
         const code = json.reasonCode ?? json.error?.reasonCode ?? "PAPER_RUN_FAILED";
-        const text = json.reasonText ?? json.error?.message ?? "Paper evidence run failed";
+        const text = json.reasonText ?? json.error?.message ?? "No useful evidence was saved.";
         setPaperRunError(`[${code}] ${text}`);
-      } else if (json.warnings?.some((w) => w.startsWith("COINGECKO_UNAVAILABLE"))) {
-        const cgWarn = json.warnings.find((w) => w.startsWith("COINGECKO_UNAVAILABLE"));
-        if (cgWarn) setPaperRunError(cgWarn);
+      } else {
+        setPaperRunError(null);
       }
 
       await fetchDashboard();
     } catch (err) {
       setPaperRunError(err instanceof Error ? err.message : "Paper evidence run failed");
+      setPaperRunWarnings([]);
     } finally {
       setPaperRunLoading(false);
     }
@@ -471,10 +695,170 @@ export function DashboardShell() {
                   status={data.paper_evidence.marketDataReady ? "READY" : "NOT_CONFIGURED"}
                 />
                 <p>Last Paper Run: {data.paper_evidence.lastRunAt ?? "—"}</p>
+                <div className="rounded-lg border p-3 space-y-1">
+                  <p className="text-xs font-medium">Evidence Counts</p>
+                  <p>Paper Runs: {data.paper_evidence.paperRuns ?? "—"}</p>
+                  <p>Candidates Stored: {data.paper_evidence.candidatesStored ?? "—"}</p>
+                  <p>Signals Stored: {data.paper_evidence.signalsStored ?? "—"}</p>
+                  <p>Snapshots Stored: {data.paper_evidence.snapshotsStored ?? "—"}</p>
+                  <p>
+                    Paper Evidence Count Total:{" "}
+                    {data.paper_evidence.paperEvidenceCountTotal ??
+                      data.paper_evidence.paperEvidenceCount}
+                  </p>
+                </div>
                 <p>Open Paper Trades: {data.paper_evidence.openPaperTrades}</p>
                 <p>Closed Paper Trades: {data.paper_evidence.closedPaperTrades}</p>
                 <p>No-Trade Signals: {data.paper_evidence.noTradeSignals}</p>
-                <p>Paper Evidence Count: {data.paper_evidence.paperEvidenceCount}</p>
+                <div className="rounded-lg border p-3 space-y-1">
+                  <p className="text-xs font-medium">Open Trade Capacity</p>
+                  <p>Max open trades: {data.paper_evidence.maxOpenTrades ?? "—"}</p>
+                  <p>Open trades: {data.paper_evidence.openPaperTrades}</p>
+                  <p>Available slots: {data.paper_evidence.availableSlots ?? "—"}</p>
+                  <p>
+                    New trade opening:{" "}
+                    {data.paper_evidence.newTradeOpening ??
+                      (data.paper_evidence.maxOpenTradesReached ? "BLOCKED" : "ALLOWED")}
+                  </p>
+                  {data.paper_evidence.maxOpenTradesReached && (
+                    <p className="text-amber-600">
+                      Reason: {data.paper_evidence.maxOpenTradesBlockReason ?? "MAX_OPEN_TRADES_REACHED"}
+                    </p>
+                  )}
+                  {data.paper_evidence.rotationWarning && (
+                    <p className="text-sm text-amber-600 rounded-lg border border-amber-500/30 p-2">
+                      {data.paper_evidence.rotationWarning}
+                    </p>
+                  )}
+                  {data.paper_evidence.rotationEnabled !== undefined && (
+                    <p className="text-xs text-muted-foreground">
+                      Paper rotation:{" "}
+                      {data.paper_evidence.rotationEnabled
+                        ? "auto_paper_only (experimental)"
+                        : `${data.paper_evidence.rotationMode ?? "disabled"} (default — secondary to quality selection)`}
+                    </p>
+                  )}
+                </div>
+
+                {data.paper_evidence.openTradeCapacity?.openTradeDetails &&
+                  data.paper_evidence.openTradeCapacity.openTradeDetails.length > 0 && (
+                    <div className="rounded-lg border p-3 space-y-1">
+                      <p className="text-xs font-medium">Open Paper Trades</p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-muted-foreground">
+                              <th className="pr-2">Symbol</th>
+                              <th className="pr-2">Tier</th>
+                              <th className="pr-2">Entry</th>
+                              <th className="pr-2">Current</th>
+                              <th className="pr-2">Unreal. P&L</th>
+                              <th className="pr-2">P&L bps</th>
+                              <th className="pr-2">Age (h)</th>
+                              <th className="pr-2">Dist TP</th>
+                              <th className="pr-2">Dist SL</th>
+                              <th className="pr-2">Score</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {data.paper_evidence.openTradeCapacity.openTradeDetails.map((t) => (
+                              <tr key={t.symbol} className="border-t border-border/50">
+                                <td className="pr-2 py-1">{t.symbol}</td>
+                                <td className="pr-2">{t.riskTier ?? "—"}</td>
+                                <td className="pr-2">{t.entryPrice?.toFixed(4) ?? "—"}</td>
+                                <td className="pr-2">{t.currentPrice?.toFixed(4) ?? "—"}</td>
+                                <td className="pr-2">
+                                  {t.unrealizedSimulatedPnl?.toFixed(4) ?? "—"} (SIM)
+                                </td>
+                                <td className="pr-2">{t.unrealizedPnlBps?.toFixed(1) ?? "—"}</td>
+                                <td className="pr-2">{t.ageHours ?? "—"}</td>
+                                <td className="pr-2">
+                                  {t.distanceToTargetBps?.toFixed(1) ?? "—"} bps
+                                </td>
+                                <td className="pr-2">{t.plannedStopLoss?.toFixed(4) ?? "—"}</td>
+                                <td className="pr-2">{t.opportunityScore?.toFixed(0) ?? "—"}</td>
+                                <td>{t.status}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                {data.paper_evidence.paperRotation && (
+                  <div className="rounded-lg border p-3 space-y-1 opacity-70">
+                    <p className="text-xs font-medium">Paper Rotation (deprecated — not used for trade selection)</p>
+                    <p>
+                      Rotation enabled:{" "}
+                      {data.paper_evidence.paperRotation.rotationConfig.enabled ? "yes" : "no"}
+                    </p>
+                    <p>
+                      Require profit:{" "}
+                      {data.paper_evidence.paperRotation.rotationConfig.requireProfit ? "yes" : "no"}
+                    </p>
+                    <p>
+                      Min score advantage:{" "}
+                      {data.paper_evidence.paperRotation.rotationConfig.minScoreAdvantage}
+                    </p>
+                    <p>
+                      Min exit P&L: {data.paper_evidence.paperRotation.rotationConfig.minExitPnlBps}{" "}
+                      bps (simulated)
+                    </p>
+                    <p>Rotations total: {data.paper_evidence.paperRotation.rotationsTotal}</p>
+                    <p>
+                      Missed (no safe exit): {data.paper_evidence.paperRotation.missedDueToNoSafeExit}
+                    </p>
+                    <p>
+                      Missed (score too small):{" "}
+                      {data.paper_evidence.paperRotation.missedDueToScoreTooSmall}
+                    </p>
+                    {data.paper_evidence.paperRotation.rotationEvents.length > 0 && (
+                      <ul className="space-y-1 text-xs">
+                        {data.paper_evidence.paperRotation.rotationEvents.map((e, i) => (
+                          <li key={`rot-${i}`}>
+                            Out {e.rotatedOut} → In {e.rotatedIn} — exit SIM P&L{" "}
+                            {e.exitSimulatedPnl?.toFixed(4) ?? "—"} — advantage{" "}
+                            {e.scoreAdvantage?.toFixed(1) ?? "—"} — {e.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {(data.paper_evidence.missedOpportunitiesTotal ?? 0) > 0 &&
+                  data.paper_evidence.missedOpportunities && (
+                    <div className="rounded-lg border border-amber-500/30 p-3 space-y-1">
+                      <p className="text-xs font-medium">Missed Opportunities</p>
+                      <p>Total missed: {data.paper_evidence.missedOpportunities.missedOpportunitiesTotal}</p>
+                      {data.paper_evidence.missedOpportunities.rotationHint && (
+                        <p className="text-xs text-amber-600">
+                          {data.paper_evidence.missedOpportunities.rotationHint}
+                        </p>
+                      )}
+                      <ul className="space-y-1 text-xs">
+                        {data.paper_evidence.missedOpportunities.topMissedOpportunities.map((m, i) => (
+                          <li key={`${m.symbol}-miss-${i}`}>
+                            {m.symbol} — {m.riskTier ?? "—"} — score {m.score?.toFixed(0) ?? "—"} —{" "}
+                            {m.reason}
+                            {m.blockedByMaxOpenTrades ? " (max open trades)" : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                {data.paper_evidence.prismaClientStale && data.paper_evidence.prismaStaleMessage && (
+                  <p className="text-sm text-destructive rounded-lg border border-destructive/30 p-2">
+                    {data.paper_evidence.prismaStaleMessage}
+                  </p>
+                )}
+                {data.paper_evidence.historicalPrismaWarning && !data.paper_evidence.prismaClientStale && (
+                  <p className="text-xs text-muted-foreground rounded-lg border p-2">
+                    Previous warning: {data.paper_evidence.historicalPrismaWarning}
+                  </p>
+                )}
                 <p>
                   Simulated Net P&L: {data.paper_evidence.simulatedNetPnl.toFixed(4)} (SIMULATED)
                 </p>
@@ -482,7 +866,132 @@ export function DashboardShell() {
                   Wins / Losses / Breakevens: {data.paper_evidence.wins} / {data.paper_evidence.losses}{" "}
                   / {data.paper_evidence.breakevens}
                 </p>
+
+                {data.paper_evidence.safetyVerification && (
+                  <div className="rounded-lg border border-green-500/30 p-3 space-y-1">
+                    <p className="text-xs font-medium">Safety Verification (SIMULATED)</p>
+                    <p>Live trading: LOCKED</p>
+                    <p>
+                      Auto execution:{" "}
+                      {data.paper_evidence.safetyVerification.autoExecutionLocked ? "LOCKED" : "—"}
+                    </p>
+                    <ul className="text-xs space-y-0.5">
+                      {data.paper_evidence.safetyVerification.checks.map((c) => (
+                        <li key={c.id}>
+                          {c.passed ? "✓" : "✗"} {c.id.replace(/_/g, " ")}
+                        </li>
+                      ))}
+                    </ul>
+                    {data.paper_evidence.nextSafeAction && (
+                      <p className="text-xs text-muted-foreground">
+                        Next safe action: {data.paper_evidence.nextSafeAction}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {data.paper_evidence.tradeHistory && (
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <p className="text-xs font-medium">Paper Trade History (SIMULATED)</p>
+                    <p className="text-xs text-muted-foreground">{data.paper_evidence.tradeHistory.warning}</p>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <p>Total closed: {data.paper_evidence.tradeHistory.summary.totalTrades}</p>
+                      <p>
+                        Win rate:{" "}
+                        {data.paper_evidence.tradeHistory.summary.winRate !== null
+                          ? `${(data.paper_evidence.tradeHistory.summary.winRate * 100).toFixed(1)}%`
+                          : "—"}
+                      </p>
+                      <p>Winners: {data.paper_evidence.tradeHistory.summary.profitableTrades}</p>
+                      <p>Losers: {data.paper_evidence.tradeHistory.summary.losingTrades}</p>
+                      <p>
+                        Net P&L: {data.paper_evidence.tradeHistory.summary.netProfitLoss.toFixed(4)} (SIM)
+                      </p>
+                      <p>
+                        Avg leverage:{" "}
+                        {data.paper_evidence.tradeHistory.summary.averageLeverageUsed?.toFixed(2) ?? "1.00"}x
+                      </p>
+                    </div>
+                    {data.paper_evidence.tradeHistory.rows.length > 0 && (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-muted-foreground">
+                              <th className="pr-2">#</th>
+                              <th className="pr-2">Coin</th>
+                              <th className="pr-2">Lev</th>
+                              <th className="pr-2">Entry</th>
+                              <th className="pr-2">Exit</th>
+                              <th className="pr-2">Net P&L</th>
+                              <th className="pr-2">%</th>
+                              <th className="pr-2">Duration</th>
+                              <th className="pr-2">Exit reason</th>
+                              <th>Result</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {data.paper_evidence.tradeHistory.rows.slice(0, 20).map((t) => (
+                              <tr key={t.tradeNumber} className="border-t border-border/50">
+                                <td className="pr-2 py-1">{t.tradeNumber}</td>
+                                <td className="pr-2">{t.coin}</td>
+                                <td className="pr-2">{t.leverageUsed}x</td>
+                                <td className="pr-2">{t.entryPrice?.toFixed(4) ?? "—"}</td>
+                                <td className="pr-2">{t.exitPrice?.toFixed(4) ?? "—"}</td>
+                                <td className="pr-2">{t.netPnl?.toFixed(4) ?? "—"} SIM</td>
+                                <td className="pr-2">{t.pctGainLoss?.toFixed(2) ?? "—"}%</td>
+                                <td className="pr-2">{t.durationHours ?? "—"}h</td>
+                                <td className="pr-2">{t.exitReason ?? "—"}</td>
+                                <td>{t.finalResult}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <StatusRow label="Evidence status" status={data.paper_evidence.currentStatus} />
+
+                {data.scanner_provider_status && (
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <p className="text-xs font-medium">Scanner provider status</p>
+                    <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                      {data.scanner_provider_status.providers.map((p) => (
+                        <div key={p.provider} className="rounded border p-2 space-y-0.5">
+                          <p className="font-medium text-foreground">{p.label}</p>
+                          <p>
+                            Connection: {p.connectionStatusLabel ?? p.status}
+                          </p>
+                          <p>
+                            Current run: {p.currentRunContribution ?? (p.contributedLastRun ? "CONTRIBUTED" : "NOT_USED")}
+                          </p>
+                          {p.currentRunReason && <p>Reason: {p.currentRunReason}</p>}
+                        </div>
+                      ))}
+                    </div>
+                    {data.scanner_provider_status.lastRunContributions && (
+                      <p className="text-xs text-muted-foreground">
+                        Last run — CoinGecko:{" "}
+                        {data.scanner_provider_status.lastRunContributions.coingeckoContributed
+                          ? "yes"
+                          : "no"}
+                        , DexScreener:{" "}
+                        {data.scanner_provider_status.lastRunContributions.dexscreenerContributed
+                          ? "yes"
+                          : "no"}
+                        , DeFiLlama:{" "}
+                        {data.scanner_provider_status.lastRunContributions.defillamaContributed
+                          ? "yes"
+                          : "no"}
+                        , Kraken:{" "}
+                        {data.scanner_provider_status.lastRunContributions.krakenContributed
+                          ? "yes"
+                          : "no"}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {data.paper_evidence.scanner && (
                   <div className="rounded-lg border p-3 space-y-1">
@@ -494,8 +1003,93 @@ export function DashboardShell() {
                     </p>
                     <p>Coins discovered: {data.paper_evidence.scanner.coinsDiscovered ?? "—"}</p>
                     <p>Coins evaluated: {data.paper_evidence.scanner.coinsEvaluated ?? "—"}</p>
+                    {data.paper_evidence.scanner.pipeline && (
+                      <div className="mt-2 space-y-0.5 rounded border p-2">
+                        <p className="font-medium">Scan pipeline (SIMULATED)</p>
+                        <p>Coins found: {data.paper_evidence.scanner.pipeline.coinsDiscovered ?? "—"}</p>
+                        <p>Coins scanned: {data.paper_evidence.scanner.pipeline.coinsScanned ?? "—"}</p>
+                        <p>
+                          Filtered out: {data.paper_evidence.scanner.pipeline.coinsFilteredOut ?? "—"}
+                        </p>
+                        <p>
+                          Passed basic filters:{" "}
+                          {data.paper_evidence.scanner.pipeline.passedBasicFilters ?? "—"}
+                        </p>
+                        <p>
+                          Deep evaluated: {data.paper_evidence.scanner.pipeline.deepEvaluated ?? "—"}
+                          {data.paper_evidence.scanner.pipeline.deepEvaluationLimit
+                            ? ` / limit ${data.paper_evidence.scanner.pipeline.deepEvaluationLimit}`
+                            : ""}
+                        </p>
+                        <p>
+                          Final ranked: {data.paper_evidence.scanner.pipeline.finalCandidates ?? "—"}
+                        </p>
+                        <p>
+                          Final opportunities:{" "}
+                          {data.paper_evidence.scanner.pipeline.finalPaperTradeCandidates ?? "—"}
+                        </p>
+                        {data.paper_evidence.scanner.pipeline.deepEvaluationLimitReason && (
+                          <p className="text-muted-foreground">
+                            {data.paper_evidence.scanner.pipeline.deepEvaluationLimitReason}
+                          </p>
+                        )}
+                        {data.paper_evidence.scanner.pipeline.selectionExplanation && (
+                          <p className="text-muted-foreground">
+                            {data.paper_evidence.scanner.pipeline.selectionExplanation}
+                          </p>
+                        )}
+                        <p>
+                          Watch-only: {data.paper_evidence.scanner.pipeline.watchOnlyCandidates ?? "—"}
+                        </p>
+                        <p>
+                          Removed (exchange):{" "}
+                          {data.paper_evidence.scanner.pipeline.removedByExchangeAvailability ?? 0}
+                        </p>
+                        <p>
+                          Removed (volume):{" "}
+                          {data.paper_evidence.scanner.pipeline.removedByVolume ?? 0}
+                        </p>
+                      </div>
+                    )}
+                    {data.paper_evidence.scanner.pipeline?.providerStatus && (
+                      <p className="text-xs">
+                        Providers:{" "}
+                        {Object.entries(data.paper_evidence.scanner.pipeline.providerStatus)
+                          .map(([k, v]) => `${k}=${v}`)
+                          .join(", ")}
+                      </p>
+                    )}
                   </div>
                 )}
+
+                {data.paper_evidence.scanner?.finalCandidateOutputs &&
+                  data.paper_evidence.scanner.finalCandidateOutputs.length > 0 && (
+                    <div className="rounded-lg border p-3 space-y-1">
+                      <p className="text-xs font-medium">Final Candidate Output (SIMULATED)</p>
+                      <ul className="space-y-2 text-xs">
+                        {data.paper_evidence.scanner.finalCandidateOutputs.slice(0, 5).map((c) => (
+                          <li key={c.symbol} className="rounded border p-2">
+                            <p className="font-medium">
+                              {c.name} ({c.symbol}) — {c.finalRecommendation} — score{" "}
+                              {c.scores.finalTotal.toFixed(0)}
+                            </p>
+                            <p>
+                              Vol ${c.volume24hUsd.toLocaleString()} · 24h {c.change24hPct.toFixed(1)}% ·
+                              conf {c.scores.confidenceLevel} · risk {c.scores.riskLevel}
+                            </p>
+                            <p>
+                              Kraken spot {c.availabilitySummary.krakenSpotAvailable} · leverage{" "}
+                              {c.availabilitySummary.krakenLeverageAvailable} · U.S.{" "}
+                              {c.availabilitySummary.usAvailability}
+                            </p>
+                            <p>
+                              Type: {c.recommendedTradeType} · alloc {c.recommendedCapitalAllocationPct.toFixed(2)}%
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
                 {data.paper_evidence.scanner?.scannerHealth && (
                   <div className="rounded-lg border p-3 space-y-1">
@@ -595,17 +1189,80 @@ export function DashboardShell() {
               <p className="text-muted-foreground">No paper evidence runs yet.</p>
             )}
             <Button onClick={() => void runPaperEvidenceStep()} disabled={paperRunLoading}>
-              {paperRunLoading ? "Running…" : "Run Paper Evidence Step"}
+              {paperRunLoading ? "Running scanner…" : "Run Paper Evidence Step"}
             </Button>
+            {paperRunLoading && (
+              <p className="text-xs text-muted-foreground">
+                Elapsed: {(paperRunElapsedMs / 1000).toFixed(1)}s
+              </p>
+            )}
             {paperRunError && (
               <p className="text-sm text-destructive rounded-lg border border-destructive/30 p-2">
-                {paperRunError}
+                Current run error: {paperRunError}
               </p>
+            )}
+            {paperRunWarnings.length > 0 && (
+              <div className="text-sm rounded-lg border border-amber-500/30 p-2 space-y-1">
+                <p className="text-xs font-medium">Current run warnings</p>
+                <ul className="list-inside list-disc text-xs text-muted-foreground">
+                  {paperRunWarnings.map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              </div>
             )}
             {paperRunResult && (
               <div className="space-y-2 rounded-lg border p-3">
+                <StatusRow label="Current run status" status={paperRunResult.status} />
+                {paperRunResult.runOutcomeMessage && (
+                  <p className="text-sm">{paperRunResult.runOutcomeMessage}</p>
+                )}
+                {paperRunResult.reasonCode && (
+                  <p>
+                    Reason: [{paperRunResult.reasonCode}] {paperRunResult.reasonText ?? ""}
+                  </p>
+                )}
                 <StatusRow label="Latest Action" status={paperRunResult.latestAction} />
-                <p>Run status: {paperRunResult.status}</p>
+                {paperRunResult.runId && <p className="text-xs text-muted-foreground">Run ID: {paperRunResult.runId}</p>}
+                {paperRunResult.durationMs !== undefined && (
+                  <p>Duration: {(paperRunResult.durationMs / 1000).toFixed(1)}s</p>
+                )}
+                {paperRunResult.countDelta !== undefined && (
+                  <p>
+                    Evidence count delta: {paperRunResult.countDelta >= 0 ? "+" : ""}
+                    {paperRunResult.countDelta} ({paperRunResult.evidenceCountBefore ?? "?"} →{" "}
+                    {paperRunResult.evidenceCountAfter ?? "?"})
+                  </p>
+                )}
+                {paperRunResult.paperRunsBefore !== undefined && (
+                  <p>
+                    Paper runs: {paperRunResult.paperRunsBefore} → {paperRunResult.paperRunsAfter}
+                  </p>
+                )}
+                {(paperRunResult.candidatesStored !== undefined ||
+                  paperRunResult.signalsStored !== undefined ||
+                  paperRunResult.snapshotsStored !== undefined) && (
+                  <p>
+                    Stored this run — candidates: {paperRunResult.candidatesStored ?? 0}, signals:{" "}
+                    {paperRunResult.signalsStored ?? 0}, snapshots: {paperRunResult.snapshotsStored ?? 0}
+                  </p>
+                )}
+                {paperRunResult.maxOpenTradesReached && (
+                  <div className="text-amber-600 space-y-1 text-xs">
+                    <p>
+                      Open trades before: {paperRunResult.openTradesBefore ?? "?"} · Closed this run:{" "}
+                      {paperRunResult.tradesClosed ?? 0} · Opened this run:{" "}
+                      {paperRunResult.tradesOpened ?? 0} · Open trades after:{" "}
+                      {paperRunResult.openTradesAfter ?? "?"}
+                    </p>
+                    <p>
+                      Max open trades: {paperRunResult.maxOpenTrades ?? "?"} —{" "}
+                      {paperRunResult.openTradesAfter === paperRunResult.maxOpenTrades
+                        ? "New openings now blocked until one open paper trade closes or expires."
+                        : "Slots available for new trades."}
+                    </p>
+                  </div>
+                )}
                 {paperRunResult.scannerMode && (
                   <p>
                     Scanner mode: {paperRunResult.scannerMode} · Sources:{" "}
@@ -628,7 +1285,10 @@ export function DashboardShell() {
                 )}
                 <p>Open trades: {paperRunResult.openPaperTrades}</p>
                 <p>Closed trades: {paperRunResult.closedPaperTrades}</p>
-                <p>Simulated net P&L: {paperRunResult.simulatedNetPnl.toFixed(4)}</p>
+                <p>Simulated net P&L: {paperRunResult.simulatedNetPnl.toFixed(4)} (portfolio SIM)</p>
+                {paperRunResult.currentRunPnlDelta !== undefined && (
+                  <p>Current run P&L delta: {paperRunResult.currentRunPnlDelta.toFixed(4)} SIM</p>
+                )}
                 {paperRunResult.openedTrades && paperRunResult.openedTrades.length > 0 && (
                   <div>
                     <p className="text-xs font-medium">Paper Trades Opened</p>
@@ -696,11 +1356,27 @@ export function DashboardShell() {
                       </ul>
                     </div>
                   )}
-                <ul className="list-inside list-disc text-xs text-muted-foreground">
-                  {paperRunResult.warnings.map((w) => (
-                    <li key={w}>{w}</li>
-                  ))}
-                </ul>
+                {paperRunResult.errors && paperRunResult.errors.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-destructive">Current run errors</p>
+                    <ul className="list-inside list-disc text-xs text-destructive">
+                      {paperRunResult.errors.map((e, i) => (
+                        <li key={`run-err-${i}`}>
+                          {e.includes("__TURBOPACK__")
+                            ? e.replace(/__TURBOPACK__[^\s]+/g, "prisma").replace(/\s+/g, " ").trim()
+                            : e}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {paperRunResult.warnings && paperRunResult.warnings.length > 0 && (
+                  <ul className="list-inside list-disc text-xs text-muted-foreground">
+                    {paperRunResult.warnings.map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
             <ul className="list-inside list-disc text-xs text-muted-foreground">

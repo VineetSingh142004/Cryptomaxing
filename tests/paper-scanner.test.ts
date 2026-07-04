@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NormalizedMarketSnapshot } from "@/lib/trading/data/types";
 import { buildTickerRows, type KrakenPairInfo } from "@/lib/trading/paper/kraken-universe";
 import {
@@ -18,6 +18,41 @@ import {
   type CoinGeckoMarketRow,
 } from "@/lib/trading/data/providers/coingecko";
 import type { TieredCandidate } from "@/lib/trading/paper/wide-universe";
+import { computeWeightedScore, emptyScoreBreakdown } from "@/lib/trading/paper/scoring";
+import {
+  KrakenPairIndex,
+  checkKrakenAvailability,
+} from "@/lib/trading/exchange/availability-service";
+import type { ExchangeAvailabilityResult } from "@/lib/trading/exchange/availability-types";
+
+function mockPairIndex(symbols: string[]) {
+  return KrakenPairIndex.fromPairs(
+    symbols.map((s) => {
+      const [base, quote] = s.split("/");
+      return {
+        krakenPair: s.replace("/", ""),
+        symbol: s,
+        baseAsset: base,
+        quoteAsset: quote,
+        wsname: s,
+        status: "online",
+        hasMarginLeverage: false,
+      };
+    }),
+  );
+}
+
+function mockAvailability(base: string, spot: "YES" | "NO" | "UNKNOWN" = "YES"): ExchangeAvailabilityResult {
+  if (spot === "UNKNOWN") {
+    return checkKrakenAvailability({ baseAsset: base, pairIndex: KrakenPairIndex.empty() });
+  }
+  if (spot === "NO") {
+    return checkKrakenAvailability({ baseAsset: base, pairIndex: mockPairIndex(["BTC/USD"]) });
+  }
+  return checkKrakenAvailability({ baseAsset: base, pairIndex: mockPairIndex([`${base}/USD`]) });
+}
+
+const defaultPairFields = { status: "online" as const, hasMarginLeverage: false };
 
 function mockSnapshot(symbol = "DOGE/USD", momentum = 0.2): NormalizedMarketSnapshot {
   const now = new Date().toISOString();
@@ -70,6 +105,8 @@ function mockSnapshot(symbol = "DOGE/USD", momentum = 0.2): NormalizedMarketSnap
 }
 
 function mockTiered(overrides: Partial<TieredCandidate> = {}): TieredCandidate {
+  const base = overrides.baseAsset ?? "PEPE";
+  const tradable = overrides.tradableOnConfiguredExchange ?? true;
   return {
     symbol: "PEPE/USD",
     baseAsset: "PEPE",
@@ -82,7 +119,8 @@ function mockTiered(overrides: Partial<TieredCandidate> = {}): TieredCandidate {
     spreadBps: 50,
     riskTier: "HIGH_VOLATILITY",
     source: "coingecko",
-    tradableOnConfiguredExchange: true,
+    tradableOnConfiguredExchange: tradable,
+    availability: mockAvailability(base, tradable ? "YES" : "NO"),
     ...overrides,
   };
 }
@@ -96,6 +134,7 @@ describe("kraken universe ticker rows", () => {
         baseAsset: "USDC",
         quoteAsset: "USD",
         wsname: "USDC/USD",
+        ...defaultPairFields,
       },
       {
         krakenPair: "SOLUSD",
@@ -103,6 +142,7 @@ describe("kraken universe ticker rows", () => {
         baseAsset: "SOL",
         quoteAsset: "USD",
         wsname: "SOL/USD",
+        ...defaultPairFields,
       },
     ];
     const tickers = {
@@ -122,6 +162,7 @@ describe("kraken universe ticker rows", () => {
         baseAsset: "XRP",
         quoteAsset: "USD",
         wsname: "XRP/USD",
+        ...defaultPairFields,
       },
     ];
     const tickers = {
@@ -147,7 +188,7 @@ describe("coingecko discovery", () => {
       low24h: 0.000008,
       lastUpdated: new Date().toISOString(),
     };
-    const coin = mapToDiscoveryCoin(row, new Set(["PEPE/USD"]));
+    const coin = mapToDiscoveryCoin(row, mockPairIndex(["PEPE/USD"]));
     expect(coin).not.toBeNull();
     expect(coin!.tradableOnKraken).toBe(true);
     expect(coin!.change24hPct).toBe(25);
@@ -167,8 +208,9 @@ describe("coingecko discovery", () => {
       low24h: 0.8,
       lastUpdated: new Date().toISOString(),
     };
-    const coin = mapToDiscoveryCoin(row, new Set(["BTC/USD"]));
+    const coin = mapToDiscoveryCoin(row, mockPairIndex(["BTC/USD"]));
     expect(coin!.tradableOnKraken).toBe(false);
+    expect(coin!.availability.krakenSpotAvailable).toBe("NO");
   });
 
   it("respects max discovery limits via config", () => {
@@ -259,6 +301,7 @@ describe("opportunity scanner", () => {
         baseAsset: "RND",
         change24hPct: 40,
         tradableOnConfiguredExchange: false,
+        availability: mockAvailability("RND", "NO"),
         riskTier: "EXTREME_RISK",
       }),
       snapshot: null,
@@ -288,11 +331,13 @@ describe("opportunity scanner", () => {
         riskPenalty: 0,
         pumpRiskPenalty: 0,
         opportunityScore: 0,
+        scoreBreakdown: emptyScoreBreakdown(),
         riskTier: "ALT_LIQUID",
         shortTermReturnPct: 0,
         breakoutScore: 0,
         source: "kraken",
         tradableOnConfiguredExchange: true,
+        availability: mockAvailability("A"),
         action: "NO_TRADE",
         actionType: "REJECTED",
         reasonCode: "SPREAD_TOO_WIDE",
@@ -470,5 +515,180 @@ describe("coingecko fetch with mocked data", () => {
     expect(gainers.some((g) => g.symbol === "PEPE")).toBe(true);
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("kraken fetch resilience", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("classifies network failure with endpoint and reason code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("fetch failed")),
+    );
+
+    const { resilientKrakenFetch } = await import("@/lib/trading/paper/kraken-fetch");
+    await expect(
+      resilientKrakenFetch({
+        url: "https://api.kraken.com/0/public/AssetPairs",
+        endpoint: "AssetPairs",
+        maxAttempts: 1,
+      }),
+    ).rejects.toMatchObject({
+      name: "KrakenFetchError",
+      endpoint: "AssetPairs",
+      reasonCode: "KRAKEN_NETWORK_FAILED",
+    });
+  });
+});
+
+describe("wide universe kraken fallback", () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    const { clearWideUniverseCache } = await import("@/lib/trading/paper/wide-universe");
+    const { clearKrakenPairIndexCache } = await import("@/lib/trading/exchange/availability-service");
+    const { clearUniverseCache } = await import("@/lib/trading/paper/kraken-universe");
+    clearWideUniverseCache();
+    clearKrakenPairIndexCache();
+    clearUniverseCache();
+  });
+
+  it("continues with CoinGecko when Kraken public fetch fails", async () => {
+    const krakenUniverse = await import("@/lib/trading/paper/kraken-universe");
+    const coingecko = await import("@/lib/trading/data/providers/coingecko");
+    const availability = await import("@/lib/trading/exchange/availability-service");
+    const defillama = await import("@/lib/trading/data/providers/defillama");
+    const dexscreener = await import("@/lib/trading/data/providers/dexscreener");
+    const { KrakenFetchError } = await import("@/lib/trading/paper/kraken-fetch");
+
+    vi.spyOn(krakenUniverse, "buildPaperSymbolUniverse").mockRejectedValue(
+      new KrakenFetchError({
+        endpoint: "AssetPairs",
+        reasonCode: "KRAKEN_NETWORK_FAILED",
+        message: "AssetPairs: fetch failed",
+      }),
+    );
+    vi.spyOn(availability, "loadKrakenPairIndex").mockResolvedValue(KrakenPairIndex.empty());
+    vi.spyOn(defillama, "fetchDefiLlamaSummary").mockResolvedValue({
+      symbol: "GLOBAL",
+      status: "ok",
+      totalTvlUsd: 1e11,
+      protocolCount: 1000,
+      chainCount: 100,
+    });
+    vi.spyOn(dexscreener, "fetchDexScreenerSummary").mockResolvedValue({
+      symbol: "ETH",
+      dexId: "uniswap",
+      status: "ok",
+      liquidityUsd: 1e6,
+      volume24hUsd: 2e6,
+      priceChange24hPct: 1,
+      buys24h: 100,
+      sells24h: 90,
+      pairAgeHours: 24,
+    });
+
+    vi.spyOn(coingecko, "discoverCoinsFromCoinGecko").mockResolvedValue({
+      topGainers: [
+        {
+          symbol: "PEPE/USD",
+          baseAsset: "PEPE",
+          quoteAsset: "USD",
+          coinGeckoId: "pepe",
+          name: "Pepe",
+          price: 0.00001,
+          volume24hUsd: 5_000_000,
+          change24hPct: 20,
+          change1hPct: 2,
+          marketCapUsd: 1e9,
+          source: "coingecko",
+          tradableOnKraken: false,
+          availability: checkKrakenAvailability({
+            baseAsset: "PEPE",
+            pairIndex: KrakenPairIndex.empty(),
+          }),
+        },
+      ],
+      topVolume: [],
+      allDiscovered: [
+        {
+          symbol: "PEPE/USD",
+          baseAsset: "PEPE",
+          quoteAsset: "USD",
+          coinGeckoId: "pepe",
+          name: "Pepe",
+          price: 0.00001,
+          volume24hUsd: 5_000_000,
+          change24hPct: 20,
+          change1hPct: 2,
+          marketCapUsd: 1e9,
+          source: "coingecko",
+          tradableOnKraken: false,
+          availability: checkKrakenAvailability({
+            baseAsset: "PEPE",
+            pairIndex: KrakenPairIndex.empty(),
+          }),
+        },
+      ],
+    });
+
+    const { buildWideUniverse, clearWideUniverseCache } = await import("@/lib/trading/paper/wide-universe");
+    clearWideUniverseCache();
+    const result = await buildWideUniverse({ bypassCache: true });
+    expect(result.krakenStatus).toBe("unavailable");
+    expect(result.coingeckoStatus).toBe("ok");
+    expect(result.coinsDiscovered).toBeGreaterThan(0);
+    expect(result.krakenFallbackUsed).toBe(true);
+    expect(result.watchlistOnlyCandidates.length).toBeGreaterThan(0);
+    expect(result.watchlistOnlyCandidates[0]?.availability.listedOnKraken).toBe("UNKNOWN");
+  });
+});
+
+describe("scanner provider status separation", () => {
+  it("shows vault connection separately from run contribution", async () => {
+    const { buildScannerProviderStatus } = await import("@/lib/trading/paper/scanner-provider-status");
+    const panel = buildScannerProviderStatus({
+      coingeckoStatus: "ok",
+      krakenStatus: "unavailable",
+      dexscreenerStatus: "ok",
+      defillamaStatus: "ok",
+      runContributions: {
+        coingeckoContributed: true,
+        krakenContributed: false,
+        dexscreenerContributed: false,
+        defillamaContributed: true,
+        lunarcrushContributed: false,
+        dexscreenerCandidatesEnriched: 0,
+        defillamaGlobalAvailable: true,
+      },
+      vaultConnections: [
+        {
+          provider: "COINGECKO",
+          lastConnectionStatus: "READY_WITH_KEY",
+          dataAccessVerified: true,
+          enabled: true,
+        },
+        {
+          provider: "KRAKEN",
+          lastConnectionStatus: "READ_ONLY_KEY_READY",
+          dataAccessVerified: true,
+          enabled: true,
+        },
+      ],
+    });
+
+    const cg = panel.providers.find((p) => p.provider === "COINGECKO");
+    const kraken = panel.providers.find((p) => p.provider === "KRAKEN");
+    const dex = panel.providers.find((p) => p.provider === "DEX_SCREENER");
+
+    expect(cg?.connectionStatusLabel).toBe("READY_WITH_KEY");
+    expect(cg?.currentRunContribution).toBe("CONTRIBUTED");
+    expect(kraken?.connectionStatusLabel).toBe("READY_WITH_KEY");
+    expect(kraken?.currentRunContribution).toBe("FAILED_THIS_RUN");
+    expect(dex?.connectionStatusLabel).toBe("READY_PUBLIC_MODE");
+    expect(dex?.currentRunContribution).toBe("SKIPPED_BY_PIPELINE");
   });
 });

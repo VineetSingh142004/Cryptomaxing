@@ -34,7 +34,7 @@ describe("vault save validation", () => {
         permissionSelfAttestation: validAttestation,
       });
     } catch (e) {
-      expect((e as AppError).reasonCode).toBe("API_KEY_MISSING");
+      expect((e as AppError).reasonCode).toBe("PROVIDER_API_KEY_MISSING");
     }
   });
 
@@ -50,6 +50,16 @@ describe("vault save validation", () => {
     } catch (e) {
       expect((e as AppError).reasonCode).toBe("API_SECRET_MISSING");
     }
+  });
+
+  it("does not require read-only attestation for CoinGecko", () => {
+    expect(() =>
+      assertVaultSaveInput({
+        provider: "COINGECKO",
+        label: "CoinGecko",
+        apiKey: "cg-key",
+      }),
+    ).not.toThrow();
   });
 
   it("requires read-only attestation for exchange", () => {

@@ -48,6 +48,8 @@ describe("public credential shape", () => {
       id: "1",
       provider: "KRAKEN",
       label: "test",
+      providerCategory: "EXCHANGE",
+      providerCategoryLabel: "Exchange",
       status: "ACTIVE",
       encryptionMethod: "AES256_GCM",
       ipWhitelistRecommended: true,
@@ -57,6 +59,9 @@ describe("public credential shape", () => {
       canWithdraw: false,
       permissionDetected: false,
       permissionReasonCode: "KRAKEN_READ_ONLY_UNVERIFIED_PERMISSIONS",
+      tradingPermissionPossible: true,
+      withdrawalPermissionPossible: true,
+      dataAccessVerified: false,
       permissionSelfAttestation: {
         noWithdrawalPermission: true,
         noTradingPermission: true,

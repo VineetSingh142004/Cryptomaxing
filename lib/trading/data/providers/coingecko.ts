@@ -1,5 +1,11 @@
 import { STABLECOIN_BASES } from "@/lib/trading/paper/paper-config";
 import { SCANNER_CONFIG, WRAPPED_PREFIXES } from "@/lib/trading/paper/scanner-config";
+import {
+  checkExchangeAvailability,
+  type KrakenPairIndex,
+} from "@/lib/trading/exchange/availability-service";
+import { isConfirmedTradable } from "@/lib/trading/exchange/availability-types";
+import type { ExchangeAvailabilityResult } from "@/lib/trading/exchange/availability-types";
 
 export interface CoinGeckoMarketRow {
   id: string;
@@ -29,6 +35,8 @@ export interface DiscoveryCoin {
   source: "coingecko";
   tradableOnKraken: boolean;
   krakenSymbol?: string;
+  availability: ExchangeAvailabilityResult;
+  change7dPct?: number | null;
 }
 
 type RawMarket = {
@@ -118,19 +126,24 @@ export async function fetchCoinGeckoTopVolume(limit = 250): Promise<CoinGeckoMar
 
 export function mapToDiscoveryCoin(
   row: CoinGeckoMarketRow,
-  krakenSymbols: Set<string>,
+  pairIndex: KrakenPairIndex,
 ): DiscoveryCoin | null {
   if (shouldExclude(row.symbol, row.name)) return null;
   if (row.currentPrice < SCANNER_CONFIG.minPriceUsd) return null;
   if (row.totalVolume < SCANNER_CONFIG.min24hVolumeUsd) return null;
 
-  const krakenSymbol = `${row.symbol}/USD`;
-  const tradableOnKraken = krakenSymbols.has(krakenSymbol);
+  const availability = checkExchangeAvailability({
+    baseAsset: row.symbol,
+    coinGeckoId: row.id,
+    pairIndex,
+  });
+  const krakenSymbol = pairIndex.getBestSymbol(row.symbol);
+  const tradableOnKraken = isConfirmedTradable(availability);
 
   return {
-    symbol: krakenSymbol,
+    symbol: krakenSymbol ?? `${row.symbol}/USD`,
     baseAsset: row.symbol,
-    quoteAsset: "USD",
+    quoteAsset: krakenSymbol?.split("/")[1] ?? "USD",
     coinGeckoId: row.id,
     name: row.name,
     price: row.currentPrice,
@@ -140,11 +153,12 @@ export function mapToDiscoveryCoin(
     marketCapUsd: row.marketCap,
     source: "coingecko",
     tradableOnKraken,
-    krakenSymbol: tradableOnKraken ? krakenSymbol : undefined,
+    krakenSymbol,
+    availability,
   };
 }
 
-export async function discoverCoinsFromCoinGecko(krakenSymbols: Set<string>): Promise<{
+export async function discoverCoinsFromCoinGecko(pairIndex: KrakenPairIndex): Promise<{
   topGainers: DiscoveryCoin[];
   topVolume: DiscoveryCoin[];
   allDiscovered: DiscoveryCoin[];
@@ -161,7 +175,7 @@ export async function discoverCoinsFromCoinGecko(krakenSymbols: Set<string>): Pr
   const topVolume: DiscoveryCoin[] = [];
 
   for (const row of gainers) {
-    const coin = mapToDiscoveryCoin(row, krakenSymbols);
+    const coin = mapToDiscoveryCoin(row, pairIndex);
     if (!coin || seen.has(coin.baseAsset)) continue;
     seen.add(coin.baseAsset);
     topGainers.push(coin);
@@ -169,7 +183,7 @@ export async function discoverCoinsFromCoinGecko(krakenSymbols: Set<string>): Pr
   }
 
   for (const row of volume) {
-    const coin = mapToDiscoveryCoin(row, krakenSymbols);
+    const coin = mapToDiscoveryCoin(row, pairIndex);
     if (!coin || seen.has(coin.baseAsset)) continue;
     seen.add(coin.baseAsset);
     topVolume.push(coin);

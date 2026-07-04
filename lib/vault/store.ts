@@ -10,7 +10,8 @@ import { testProviderConnection } from "@/lib/vault/provider-health";
 import { detectPermissions, validatePermissionsForStorage } from "@/lib/vault/permissions";
 import { permissionsFromAttestation } from "@/lib/vault/save-validation";
 import { isEnabledCredentialStatus } from "@/lib/vault/credential-status";
-import { PROVIDER_METADATA, type ProviderCredentialPublic } from "@/lib/vault/types";
+import { isExchangeCategory, categoryLabel } from "@/lib/vault/categories";
+import { PROVIDER_METADATA, type ProviderCredentialPublic, providerMetaForType } from "@/lib/vault/types";
 
 export { isEnabledCredentialStatus } from "@/lib/vault/credential-status";
 
@@ -57,10 +58,14 @@ function toPublicCredential(c: {
     }
   }
 
+  const meta = providerMetaForType(c.provider);
+
   return {
     id: c.id,
-    provider: c.provider,
+    provider: c.provider as ProviderCredentialPublic["provider"],
     label: c.label,
+    providerCategory: meta.providerCategory,
+    providerCategoryLabel: categoryLabel(meta.providerCategory),
     status: c.status,
     encryptionMethod: c.encryptionMethod,
     ipWhitelistRecommended: c.ipWhitelistRecommended,
@@ -70,6 +75,9 @@ function toPublicCredential(c: {
     canWithdraw: c.canWithdraw,
     permissionDetected: c.permissionDetected,
     permissionReasonCode: c.permissionReasonCode,
+    tradingPermissionPossible: meta.tradingPermissionPossible,
+    withdrawalPermissionPossible: meta.withdrawalPermissionPossible,
+    dataAccessVerified: c.lastHealthStatus === "ok",
     permissionSelfAttestation,
     lastReadOnlyVerifiedAt: c.lastReadOnlyVerifiedAt?.toISOString() ?? null,
     lastConnectionTestAt: c.lastConnectionTestAt?.toISOString() ?? null,
@@ -119,7 +127,7 @@ export async function createProviderCredential(input: {
     });
   }
 
-  if (meta.category === "exchange") {
+  if (isExchangeCategory(meta.providerCategory)) {
     const att = input.permissionSelfAttestation;
     if (
       !att?.noWithdrawalPermission ||
@@ -137,11 +145,11 @@ export async function createProviderCredential(input: {
   await assertVaultWriteAllowed();
 
   const permissions =
-    meta.category === "exchange" && input.permissionSelfAttestation
+    isExchangeCategory(meta.providerCategory) && input.permissionSelfAttestation
       ? permissionsFromAttestation(input.provider)
       : await detectPermissions(
           input.provider,
-          input.apiKey.trim(),
+          (input.apiKey?.trim() || "PUBLIC_ENDPOINT"),
           input.apiSecret?.trim() ?? "",
           input.passphrase?.trim(),
         );
@@ -153,7 +161,7 @@ export async function createProviderCredential(input: {
     });
   }
 
-  const encKey = encryptSecret(input.apiKey.trim());
+  const encKey = encryptSecret((input.apiKey?.trim() || "PUBLIC_ENDPOINT"));
   const encSecret = input.apiSecret?.trim() ? encryptSecret(input.apiSecret.trim()) : null;
   const encPassphrase = input.passphrase?.trim() ? encryptSecret(input.passphrase.trim()) : null;
 
@@ -302,7 +310,7 @@ export async function runConnectionTest(id: string): Promise<{
     where: { id },
     data: {
       lastConnectionTestAt: new Date(),
-      lastConnectionStatus: test.status,
+      lastConnectionStatus: test.reasonCode,
       lastLatencyMs: test.latencyMs,
       lastHealthCheckAt: new Date(),
       lastHealthStatus: test.success ? "ok" : "error",
