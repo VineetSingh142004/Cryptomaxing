@@ -46,6 +46,10 @@ import {
   CARRIED_FROM_PREVIOUS_RECORD,
 } from "@/lib/trading/paper/paper-record";
 import { prisma } from "@/lib/db/client";
+import {
+  formatDiagnosticsExportLines,
+  type PaperRunDiagnostics,
+} from "@/lib/trading/paper/paper-diagnostics";
 
 export type PaperExportMode =
   | "SUMMARY_EXPORT"
@@ -1309,6 +1313,23 @@ function buildImprovementSection(data: PaperExportData): string {
   ]);
 }
 
+function buildPaperDiagnosticsExportSection(runs: PaperEvidenceRun[]): string {
+  const latest = [...runs].sort(
+    (a, b) => b.startedAt.getTime() - a.startedAt.getTime(),
+  )[0];
+  if (!latest) {
+    return section("PAPER RUN DIAGNOSTICS (SIMULATED)", ["No paper runs available."]);
+  }
+  const summary = (latest.scanSummary ?? {}) as Record<string, unknown>;
+  const diagnostics = summary.paperRunDiagnostics as PaperRunDiagnostics | undefined;
+  if (!diagnostics) {
+    return section("PAPER RUN DIAGNOSTICS (SIMULATED)", [
+      "Diagnostics not stored for latest run — execute a new paper scan after upgrade.",
+    ]);
+  }
+  return section("PAPER RUN DIAGNOSTICS (SIMULATED)", formatDiagnosticsExportLines(diagnostics));
+}
+
 function buildExportSections(data: PaperExportData): string[] {
   const parts: string[] = [];
   parts.push("ALPHA AUTOPILOT PAPER RECORD EXPORT");
@@ -1420,6 +1441,7 @@ function buildExportSections(data: PaperExportData): string[] {
   parts.push(simpleSummaryLines(data.performance).join("\n"));
   parts.push(buildSystemStatusSection(data));
   parts.push(buildCurrentRecordSection(data));
+  parts.push(buildPaperDiagnosticsExportSection(data.runs));
   parts.push(buildArchivedRecordsSection(data));
 
   if (data.mode !== "SUMMARY_EXPORT") {

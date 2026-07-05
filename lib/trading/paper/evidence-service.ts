@@ -85,6 +85,7 @@ import { evaluateBlueprintExit, type BlueprintExitReason } from "@/lib/trading/p
 import { evaluateProfitLockState, evaluateRecordProfitLock } from "@/lib/trading/paper/profit-lock-engine";
 import { evaluateOpportunityCost } from "@/lib/trading/paper/opportunity-cost-engine";
 import { buildWhyNoTradeReport } from "@/lib/trading/paper/why-no-trade-report";
+import { buildPaperRunDiagnostics } from "@/lib/trading/paper/paper-diagnostics";
 import { evaluateTradeFrequencyHealth } from "@/lib/trading/paper/trade-frequency-health";
 import { buildPaperBrokerRealismStatus } from "@/lib/trading/paper/paper-broker-realism";
 import { mapStrategyForCandidate } from "@/lib/trading/paper/strategy-mapping";
@@ -1657,6 +1658,9 @@ export async function getPaperStatus() {
   const whyNoTradeReport =
     (latestRunSummary.whyNoTradeReport as ReturnType<typeof buildWhyNoTradeReport> | undefined) ??
     null;
+  const paperRunDiagnostics =
+    (latestRunSummary.paperRunDiagnostics as ReturnType<typeof buildPaperRunDiagnostics> | undefined) ??
+    null;
   const tradeFrequencyHealth = evaluateTradeFrequencyHealth({
     runsCompleted: recordScopedRuns.filter((r) => r.status === "COMPLETED").length,
     candidatesScanned: recordStats.candidatesStored,
@@ -1791,6 +1795,7 @@ export async function getPaperStatus() {
     recordLossAudits,
     tradeFrequencyHealth,
     whyNoTradeReport,
+    paperRunDiagnostics,
     paperBrokerRealism,
     recordProfitLock,
     riskConfig: serializePaperRiskConfig(),
@@ -2723,6 +2728,15 @@ export async function runPaperEvidenceStep(options?: {
     evaluated: scanSymbols.length,
   });
 
+  const paperRunDiagnostics = buildPaperRunDiagnostics({
+    ranked,
+    pipelineCounts,
+    tradesOpenedThisRun: tradesOpened,
+    providerSource: wideResult.activeDataSources?.join(", ") ?? undefined,
+    marketDataStatus,
+    timestamp: finishedAt.toISOString(),
+  });
+
   const databaseWriteFailed =
     candidateWriteFailures > 0 && candidatesStored === 0 && ranked.length > 0;
   const snapshotWriteFailed = snapshotWriteFailures > 0 && snapshotsStored === 0 && tradesUpdated > 0;
@@ -2861,6 +2875,7 @@ export async function runPaperEvidenceStep(options?: {
       scanSummary: {
         rejectionSummary,
         whyNoTradeReport,
+        paperRunDiagnostics,
         pipelineCounts,
         marketDataStatus,
         coingeckoStatus: wideResult.coingeckoStatus,

@@ -48,6 +48,8 @@ export interface ScanCandidate {
   reasonCode: PaperReasonCode | string;
   reasonText: string;
   rank?: number;
+  candleCount?: number;
+  candlesLoaded?: boolean;
 }
 
 function clamp(n: number, min = 0, max = 100): number {
@@ -200,6 +202,8 @@ export function buildScanCandidateFromTiered(input: {
           (unconfirmed
             ? "Detected by CoinGecko/DexScreener, but not confirmed tradable on connected exchange."
             : "High-momentum coin found, but not tradable on configured exchange."),
+        candleCount: 0,
+        candlesLoaded: false,
       };
     }
 
@@ -233,6 +237,8 @@ export function buildScanCandidateFromTiered(input: {
       actionType: "SKIPPED",
       reasonCode: "MARKET_DATA_FAILED",
       reasonText: "Awaiting Kraken snapshot for full evaluation",
+      candleCount: 0,
+      candlesLoaded: false,
     };
   }
 
@@ -364,7 +370,7 @@ export function buildScanCandidate(input: {
       hasExitPlan,
       entryPrice: price,
       pumpRiskPenalty,
-      momentumScore: scoreBreakdown.trendScore,
+      momentumScore: scoreBreakdown.momentumScore,
       volumeSpikeScore: volSpike,
       shortTermReturnPct: ret,
       tradableOnConfiguredExchange: tradable,
@@ -428,6 +434,8 @@ export function buildScanCandidate(input: {
     source,
     tradableOnConfiguredExchange: isConfirmedTradable(availability),
     availability,
+    candleCount: snapshot.candles5m.length,
+    candlesLoaded: snapshot.candles5m.length >= 10,
     change7dPct: tiered?.change7dPct ?? null,
     coinName: tiered?.name,
     action,

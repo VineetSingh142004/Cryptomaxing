@@ -1531,6 +1531,142 @@ export function DashboardShell() {
                   </div>
                 )}
 
+                {isCurrentRecordView &&
+                  (data?.paper_evidence as { paperRunDiagnostics?: Record<string, unknown> } | undefined)
+                    ?.paperRunDiagnostics && (
+                  <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 space-y-3">
+                    <p className="text-sm font-semibold">Paper Mode Diagnostics (SIMULATED)</p>
+                    {(() => {
+                      const d = (data!.paper_evidence as {
+                        paperRunDiagnostics: {
+                          botWorkingVerdict: { status: string; headline: string; explanation: string; badMarketVsBrokenBot: string };
+                          featureScoreHealth: {
+                            summary: string;
+                            candlesLoaded: boolean;
+                            candlesLoadedPct: number;
+                            providerSource: string;
+                            warningFlags: string[];
+                            zeroScoreExplanations: { trendScore: string; breakoutScore: string };
+                            distributions: {
+                              momentumScore: { min: number; median: number; max: number };
+                              trendScore: { min: number; median: number; max: number };
+                              breakoutScore: { min: number; median: number; max: number };
+                              opportunityScore: { min: number; median: number; max: number };
+                            };
+                          };
+                          strategyFormulaHealth: {
+                            summary: string;
+                            bestCandidateSymbol: string | null;
+                            strategies: Array<{
+                              strategyName: string;
+                              pass: boolean;
+                              formulaStatus: string;
+                              scoreSource: string;
+                              failReason: string | null;
+                              zeroScoreReason: string | null;
+                            }>;
+                          };
+                          badMarketVsBrokenBot: string;
+                          thresholdCalibration: {
+                            recommendation: string;
+                            thresholdsChanged: boolean;
+                            strategies: Array<{
+                              strategyName: string;
+                              feature: string;
+                              currentThreshold: number;
+                              topCandidateValue: number;
+                              maxValue: number;
+                              conclusion: string;
+                            }>;
+                          };
+                          shadowReplay: {
+                            summary: string;
+                            moneyProtectedNote: string;
+                            missedOpportunityNote: string;
+                            blockedLaterLost: number;
+                            blockedLaterWon: number;
+                            filterPrecision: number | null;
+                            entries: Array<{ symbol: string; reasonBlocked: string; outcome: string }>;
+                          };
+                          tinyBEligibility: {
+                            message: string;
+                            bNearMissCount: number;
+                            tinyBAllowedThisRun: boolean;
+                            nearMisses: Array<{ symbol: string; missingCount: number; exactBlocker: string }>;
+                          };
+                          safetyLocks: { liveTradingLocked: boolean; autoExecutionLocked: boolean; paperPnlSimulated: boolean };
+                        };
+                      }).paperRunDiagnostics;
+                      const fh = d.featureScoreHealth;
+                      const fmtDist = (label: string, dist: { min: number; median: number; max: number }) =>
+                        `${label}: min ${dist.min.toFixed(0)} / med ${dist.median.toFixed(0)} / max ${dist.max.toFixed(0)}`;
+                      return (
+                        <div className="text-xs space-y-3">
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">1. Bot Working Verdict</p>
+                            <p>{d.botWorkingVerdict.status} — {d.botWorkingVerdict.headline}</p>
+                            <p className="text-muted-foreground">{d.botWorkingVerdict.explanation}</p>
+                          </div>
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">2. Feature Score Health</p>
+                            <p>{fh.summary}</p>
+                            <p>{fmtDist("momentum", fh.distributions.momentumScore)}</p>
+                            <p>{fmtDist("trend", fh.distributions.trendScore)}</p>
+                            <p>{fmtDist("breakout", fh.distributions.breakoutScore)}</p>
+                            <p>{fmtDist("opportunity", fh.distributions.opportunityScore)}</p>
+                            <p>Candles: {fh.candlesLoaded ? "YES" : "NO"} ({(fh.candlesLoadedPct * 100).toFixed(0)}%) · provider {fh.providerSource}</p>
+                            <p>Trend zero: {fh.zeroScoreExplanations.trendScore}</p>
+                            <p>Breakout zero: {fh.zeroScoreExplanations.breakoutScore}</p>
+                            <p>Flags: {fh.warningFlags.join(", ") || "none"}</p>
+                          </div>
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">3. Strategy Formula Health ({d.strategyFormulaHealth.bestCandidateSymbol ?? "—"})</p>
+                            <p>{d.strategyFormulaHealth.summary}</p>
+                            {d.strategyFormulaHealth.strategies.map((s) => (
+                              <p key={s.strategyName}>
+                                {s.strategyName}: {s.pass ? "PASS" : "FAIL"} · {s.formulaStatus} · {s.scoreSource}
+                                {s.failReason ? ` — ${s.failReason}` : ""}
+                                {s.zeroScoreReason ? ` · ${s.zeroScoreReason}` : ""}
+                              </p>
+                            ))}
+                          </div>
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">4. Bad Market vs Broken Bot</p>
+                            <p>Verdict: {d.badMarketVsBrokenBot}</p>
+                          </div>
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">5. Threshold Calibration (no auto-adjust)</p>
+                            <p>{d.thresholdCalibration.recommendation}</p>
+                            {d.thresholdCalibration.strategies.slice(0, 4).map((r) => (
+                              <p key={`${r.strategyName}-${r.feature}`}>
+                                {r.strategyName} {r.feature}: need {r.currentThreshold}, top {r.topCandidateValue.toFixed(0)}, max {r.maxValue.toFixed(0)} — {r.conclusion}
+                              </p>
+                            ))}
+                          </div>
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">6. Shadow Replay / Money Protected</p>
+                            <p>{d.shadowReplay.summary}</p>
+                            <p>{d.shadowReplay.moneyProtectedNote}</p>
+                            <p>{d.shadowReplay.missedOpportunityNote}</p>
+                            <p>Protected: {d.shadowReplay.blockedLaterLost} · Missed: {d.shadowReplay.blockedLaterWon} · Precision: {d.shadowReplay.filterPrecision !== null ? `${(d.shadowReplay.filterPrecision * 100).toFixed(0)}%` : "pending"}</p>
+                          </div>
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">7. Tiny B Eligibility</p>
+                            <p>{d.tinyBEligibility.message}</p>
+                            {d.tinyBEligibility.nearMisses.slice(0, 3).map((n) => (
+                              <p key={n.symbol}>{n.symbol}: {n.missingCount} missing — {n.exactBlocker}</p>
+                            ))}
+                          </div>
+                          <div className="rounded border p-2 space-y-1">
+                            <p className="font-medium">10. Safety Locks</p>
+                            <p>Live trading: LOCKED · Auto: {d.safetyLocks.autoExecutionLocked ? "LOCKED" : "UNLOCKED"} · P&L: SIMULATED</p>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 {isCurrentRecordView && data?.paper_evidence?.tradeFrequencyHealth && (
                   <div className="rounded-lg border p-4 space-y-2">
                     <p className="text-sm font-semibold">Trade Frequency Health (SIMULATED)</p>
