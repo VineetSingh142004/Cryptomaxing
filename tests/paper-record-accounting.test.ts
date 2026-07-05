@@ -202,7 +202,7 @@ describe("why-no-trade counts", () => {
     });
     expect(report?.candidateCounts.totalRanked).toBe(120);
     expect(report?.candidateCounts.failedFilters).toBeLessThanOrEqual(120);
-    expect(report?.finalReason).toContain("120 candidates ranked");
+    expect(report?.finalReason).toContain("ranked 120");
   });
 });
 
@@ -259,16 +259,16 @@ describe("profit factor display", () => {
 });
 
 describe("activity feed vs trade history", () => {
-  it("uses ACCOUNTING_SYNC when zero trades closed", () => {
+  it("uses RECORD_HISTORY_SYNC when zero trades closed", () => {
     const feed = buildRecordActivityFeed([], 10, {
       newTradesClosedInRecord: 0,
       carriedTradesClosedInRecord: 0,
     });
     expect(feed.some((e) => e.type === "TRADE_CLOSED")).toBe(false);
-    expect(feed.some((e) => e.type === "ACCOUNTING_SYNC")).toBe(true);
+    expect(feed.some((e) => e.type === "RECORD_HISTORY_SYNC")).toBe(true);
   });
 
-  it("uses TRADE_CLOSED only when trades actually closed", () => {
+  it("uses TRADE_CLOSED only when trades actually closed in that run", () => {
     const feed = buildRecordActivityFeed(
       [
         {
@@ -294,8 +294,10 @@ describe("activity feed vs trade history", () => {
       { newTradesClosedInRecord: 2, carriedTradesClosedInRecord: 1 },
     );
     const closeEvents = feed.filter((e) => e.type === "TRADE_CLOSED");
-    expect(closeEvents).toHaveLength(1);
-    expect(closeEvents[0]?.summary).toContain("2 closed new trade(s), 1 closed carried trade(s)");
+    expect(closeEvents).toHaveLength(2);
+    expect(closeEvents.some((e) => e.summary.includes("Closed 2 paper trade(s) in this run"))).toBe(true);
+    expect(feed.some((e) => e.type === "RECORD_HISTORY_SYNC")).toBe(true);
+    expect(feed.some((e) => e.summary.includes("Record trade history:"))).toBe(false);
   });
 });
 

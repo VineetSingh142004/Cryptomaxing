@@ -65,11 +65,10 @@ function checkVwapReclaimMomentum(candidate: ScanCandidate): BlueprintStrategyCh
   const minScore = minStrategyScore(VWAP_RECLAIM_MOMENTUM);
   const missing: string[] = [];
 
-  if (mom < 60) missing.push(`momentumScore ${mom.toFixed(0)} < 60`);
-  if (shortRet <= 0.2) missing.push(`shortTermReturnPct ${shortRet.toFixed(2)}% <= 0.2%`);
+  if (mom < 60) missing.push(`momentumScore ${mom.toFixed(0)}/60`);
+  if (shortRet <= 0.2) missing.push(`shortTermReturn ${shortRet.toFixed(2)}% <= 0.2%`);
   if (score < minScore) missing.push(`opportunityScore ${score.toFixed(0)} < ${minScore}`);
   if (!candidate.tradableOnConfiguredExchange) missing.push("not confirmed tradable on exchange");
-  if (candidate.action !== "OPEN_TRADE") missing.push(`action ${candidate.action} (needs OPEN_TRADE)`);
 
   const passed = missing.length === 0;
   return {
@@ -93,12 +92,11 @@ function checkVolatilityCompressionBreakout(candidate: ScanCandidate): Blueprint
   const minScore = minStrategyScore(VOLATILITY_COMPRESSION_BREAKOUT);
   const missing: string[] = [];
 
-  if (breakout < 65) missing.push(`breakoutScore ${breakout.toFixed(0)} < 65`);
-  if (vol < 55) missing.push(`volatilityScore ${vol.toFixed(0)} < 55`);
+  if (breakout < 65) missing.push(`breakoutScore ${breakout.toFixed(0)}/65`);
+  if (vol < 55) missing.push(`volatilityScore ${vol.toFixed(0)}/55`);
   if (change < 3) missing.push(`24h move ${change.toFixed(1)}% < 3%`);
   if (score < minScore) missing.push(`opportunityScore ${score.toFixed(0)} < ${minScore}`);
   if (!candidate.tradableOnConfiguredExchange) missing.push("not confirmed tradable on exchange");
-  if (candidate.action !== "OPEN_TRADE") missing.push(`action ${candidate.action} (needs OPEN_TRADE)`);
 
   const passed = missing.length === 0;
   return {
@@ -122,15 +120,14 @@ function checkTrendPullbackContinuation(candidate: ScanCandidate): BlueprintStra
   const missing: string[] = [];
 
   const trendPullback = trend >= 55 && mom >= 45;
-  const highScoreFallback = score >= 70 && candidate.action === "OPEN_TRADE";
+  const highScoreFallback = score >= 70;
   if (!trendPullback && !highScoreFallback) {
-    if (trend < 55) missing.push(`trendScore ${trend.toFixed(0)} < 55`);
-    if (mom < 45) missing.push(`momentumScore ${mom.toFixed(0)} < 45`);
+    if (trend < 55) missing.push(`trendScore ${trend.toFixed(0)}/55`);
+    if (mom < 45) missing.push(`momentumScore ${mom.toFixed(0)}/45`);
     if (score < 70) missing.push(`opportunityScore ${score.toFixed(0)} < 70 fallback threshold`);
   }
   if (score < minScore) missing.push(`opportunityScore ${score.toFixed(0)} < ${minScore}`);
   if (!candidate.tradableOnConfiguredExchange) missing.push("not confirmed tradable on exchange");
-  if (candidate.action !== "OPEN_TRADE") missing.push(`action ${candidate.action} (needs OPEN_TRADE)`);
 
   const passed = missing.length === 0;
   return {
@@ -146,21 +143,34 @@ function checkTrendPullbackContinuation(candidate: ScanCandidate): BlueprintStra
   };
 }
 
+function pickStrategyDefinition(candidate: ScanCandidate): StrategyDefinition {
+  const mom = candidate.momentumScore ?? 0;
+  const vol = candidate.volatilityScore ?? 0;
+  const trend = candidate.trendScore ?? 0;
+  const breakout = candidate.breakoutScore ?? 0;
+  const change = Math.abs(candidate.change24hPct ?? 0);
+
+  if (breakout >= 65 && vol >= 55 && change >= 3) return VOLATILITY_COMPRESSION_BREAKOUT;
+  if (mom >= 60 && candidate.shortTermReturnPct > 0.2) return VWAP_RECLAIM_MOMENTUM;
+  if (trend >= 55 && mom >= 45) return TREND_PULLBACK_CONTINUATION;
+  return TREND_PULLBACK_CONTINUATION;
+}
+
 export function evaluateAllBlueprintStrategies(candidate: ScanCandidate): BlueprintStrategyMatchDebug {
   const vwap = checkVwapReclaimMomentum(candidate);
   const volBreakout = checkVolatilityCompressionBreakout(candidate);
   const trendPullback = checkTrendPullbackContinuation(candidate);
   const checks = [vwap, volBreakout, trendPullback];
   const passedCheck = checks.find((c) => c.passed) ?? null;
-  const mapping = mapStrategyForCandidate(candidate);
+  const chosen = passedCheck
+    ? STRATEGIES.find((s) => s.id === passedCheck.strategyId) ?? pickStrategyDefinition(candidate)
+    : pickStrategyDefinition(candidate);
 
-  let finalDecision: StrategyVerdict = mapping.verdict;
+  let finalDecision: StrategyVerdict = "RESEARCH_ONLY";
   if (passedCheck) {
     finalDecision = "TRADE_ALLOWED";
   } else if (candidate.opportunityScore >= minScoreForTier(candidate.riskTier)) {
     finalDecision = "WATCH_ONLY";
-  } else {
-    finalDecision = "RESEARCH_ONLY";
   }
 
   const allMissing = [...new Set(checks.flatMap((c) => c.missingConditions))];
@@ -169,15 +179,17 @@ export function evaluateAllBlueprintStrategies(candidate: ScanCandidate): Bluepr
     paperModeSuggestion = "TRADE_ALLOWED";
   } else if (
     candidate.opportunityScore >= minScoreForTier(candidate.riskTier) + 5 &&
-    candidate.opportunityScore >= 68
+    candidate.opportunityScore >= 68 &&
+    checks.some((c) => !c.passed && c.missingConditions.length <= 3)
   ) {
     paperModeSuggestion = "TINY_B_SETUP";
   }
 
+  const closestFail = [...checks].sort((a, b) => a.missingConditions.length - b.missingConditions.length)[0];
   const finalReason = passedCheck
     ? `${passedCheck.strategyName} matched — trade allowed in paper mode.`
-    : candidate.opportunityScore >= minScoreForTier(candidate.riskTier)
-      ? `Score passed tier threshold but no blueprint strategy matched — ${paperModeSuggestion === "TINY_B_SETUP" ? "consider tiny B paper setup" : "WATCH_ONLY in paper mode"}.`
+    : closestFail
+      ? `${closestFail.strategyName} failed because ${closestFail.missingConditions[0] ?? "conditions not met"}.`
       : "Score and blueprint conditions not met — research only.";
 
   return {
@@ -185,7 +197,7 @@ export function evaluateAllBlueprintStrategies(candidate: ScanCandidate): Bluepr
     vwapReclaimMomentum: vwap,
     volatilityCompressionBreakout: volBreakout,
     trendPullbackContinuation: trendPullback,
-    bestMatchStrategy: passedCheck?.strategyName ?? mapping.strategyName,
+    bestMatchStrategy: passedCheck?.strategyName ?? chosen.name,
     missingConditions: allMissing,
     finalDecision,
     finalReason,
@@ -212,39 +224,34 @@ export function formatBlueprintStrategyMatchDebugLines(debug: BlueprintStrategyM
   ];
 }
 
-export function mapStrategyForCandidate(candidate: ScanCandidate): StrategyMappingResult {
-  const mom = candidate.momentumScore ?? 0;
-  const vol = candidate.volatilityScore ?? 0;
-  const trend = candidate.trendScore ?? 0;
-  const breakout = candidate.breakoutScore ?? 0;
-  const change = Math.abs(candidate.change24hPct ?? 0);
+export function mapStrategyForCandidate(
+  candidate: ScanCandidate,
+  blueprint?: BlueprintStrategyMatchDebug,
+): StrategyMappingResult {
+  const debug = blueprint ?? evaluateAllBlueprintStrategies(candidate);
+  const chosen =
+    STRATEGIES.find((s) => s.name === debug.bestMatchStrategy) ?? pickStrategyDefinition(candidate);
+  const passedCheck =
+    debug.vwapReclaimMomentum.passed ||
+    debug.volatilityCompressionBreakout.passed ||
+    debug.trendPullbackContinuation.passed;
 
-  let chosen: StrategyDefinition = TREND_PULLBACK_CONTINUATION;
   let whyNow = "Trend-aligned pullback with continuation signals";
-
-  if (breakout >= 65 && vol >= 55 && change >= 3) {
-    chosen = VOLATILITY_COMPRESSION_BREAKOUT;
+  if (chosen.id === VOLATILITY_COMPRESSION_BREAKOUT.id) {
     whyNow = "Compression breakout with volume expansion";
-  } else if (mom >= 60 && candidate.shortTermReturnPct > 0.2) {
-    chosen = VWAP_RECLAIM_MOMENTUM;
+  } else if (chosen.id === VWAP_RECLAIM_MOMENTUM.id) {
     whyNow = "VWAP reclaim momentum with volume confirmation";
-  } else if (trend >= 55 && mom >= 45) {
-    chosen = TREND_PULLBACK_CONTINUATION;
+  } else if ((candidate.trendScore ?? 0) >= 55 && (candidate.momentumScore ?? 0) >= 45) {
     whyNow = "Intraday trend pullback holding support";
-  } else if (candidate.opportunityScore >= 70 && candidate.action === "OPEN_TRADE") {
-    chosen = TREND_PULLBACK_CONTINUATION;
+  } else if (candidate.opportunityScore >= 70) {
     whyNow = "Highest-score fallback mapped to trend continuation rules";
   }
 
-  const verdict: StrategyVerdict =
-    candidate.action !== "OPEN_TRADE"
-      ? candidate.action === "WATCHLIST_ONLY"
-        ? "WATCH_ONLY"
-        : "RESEARCH_ONLY"
-      : candidate.opportunityScore >= minStrategyScore(chosen) &&
-          candidate.tradableOnConfiguredExchange
-        ? "TRADE_ALLOWED"
-        : "RESEARCH_ONLY";
+  const verdict: StrategyVerdict = passedCheck
+    ? "TRADE_ALLOWED"
+    : candidate.opportunityScore >= minScoreForTier(candidate.riskTier)
+      ? "WATCH_ONLY"
+      : "RESEARCH_ONLY";
 
   return {
     strategyId: chosen.id,
@@ -270,8 +277,12 @@ export function blockIfNoBlueprintStrategy(candidate: ScanCandidate): {
   debug: BlueprintStrategyMatchDebug;
 } {
   const debug = evaluateAllBlueprintStrategies(candidate);
-  const mapping = mapStrategyForCandidate(candidate);
-  const blocked = debug.finalDecision !== "TRADE_ALLOWED";
+  const mapping = mapStrategyForCandidate(candidate, debug);
+  const blocked = !(
+    debug.vwapReclaimMomentum.passed ||
+    debug.volatilityCompressionBreakout.passed ||
+    debug.trendPullbackContinuation.passed
+  );
   return {
     blocked,
     mapping,

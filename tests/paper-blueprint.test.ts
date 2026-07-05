@@ -12,6 +12,10 @@ import {
   evaluateAllBlueprintStrategies,
   mapStrategyForCandidate,
 } from "@/lib/trading/paper/strategy-mapping";
+import {
+  canOpenPaperTrade,
+  evaluatePaperDecision,
+} from "@/lib/trading/paper/paper-decision-pipeline";
 import { formatScoreTooLowMessage, minScoreForTier, resolveCandidateBlockReason } from "@/lib/trading/paper/trade-selection";
 import { buildPaperBrokerRealismStatus } from "@/lib/trading/paper/paper-broker-realism";
 import { evaluateRecordCautionMode } from "@/lib/trading/paper/profit-protection";
@@ -242,6 +246,92 @@ describe("trade frequency health", () => {
   });
 });
 
+describe("decision pipeline", () => {
+  it("blueprint strategy matcher does not require candidate.action OPEN_TRADE", () => {
+    const debug = evaluateAllBlueprintStrategies(
+      mockCandidate({
+        action: "NO_TRADE" as never,
+        momentumScore: 65,
+        shortTermReturnPct: 0.5,
+        opportunityScore: 78,
+      }),
+    );
+    const allMissing = [
+      ...debug.vwapReclaimMomentum.missingConditions,
+      ...debug.volatilityCompressionBreakout.missingConditions,
+      ...debug.trendPullbackContinuation.missingConditions,
+    ].join(" ");
+    expect(allMissing).not.toContain("needs OPEN_TRADE");
+    expect(allMissing).not.toContain("action NO_TRADE");
+  });
+
+  it("candidate can become OPEN_PAPER_TRADE when blueprint strategy matched", () => {
+    const decision = evaluatePaperDecision(
+      mockCandidate({
+        action: "NO_TRADE" as never,
+        reasonCode: "TRADE_READY",
+        momentumScore: 65,
+        shortTermReturnPct: 0.5,
+        opportunityScore: 78,
+      }),
+    );
+    expect(decision.decision).toBe("OPEN_PAPER_TRADE");
+    expect(canOpenPaperTrade(decision.decision)).toBe(true);
+  });
+
+  it("tiny B blocked when volume low", () => {
+    const decision = evaluatePaperDecision(
+      mockCandidate({
+        volume24hUsd: 1000,
+        reasonCode: "VOLUME_TOO_LOW",
+        action: "NO_TRADE" as never,
+        momentumScore: 62,
+        shortTermReturnPct: 0.4,
+        opportunityScore: 70,
+      }),
+    );
+    expect(decision.decision).not.toBe("TINY_B_SETUP_PAPER_ONLY");
+  });
+
+  it("tiny B blocked when spread wide", () => {
+    const decision = evaluatePaperDecision(
+      mockCandidate({
+        spreadBps: 500,
+        reasonCode: "SPREAD_TOO_WIDE",
+        action: "NO_TRADE" as never,
+        momentumScore: 62,
+        shortTermReturnPct: 0.4,
+        opportunityScore: 70,
+      }),
+    );
+    expect(decision.decision).not.toBe("TINY_B_SETUP_PAPER_ONLY");
+  });
+
+  it("tiny B blocked when not tradable", () => {
+    const decision = evaluatePaperDecision(
+      mockCandidate({
+        tradableOnConfiguredExchange: false,
+        reasonCode: "NOT_TRADABLE_ON_EXCHANGE",
+        action: "NO_TRADE" as never,
+      }),
+    );
+    expect(decision.decision).toBe("REJECT");
+  });
+
+  it("tiny B blocked when R:R bad", () => {
+    const decision = evaluatePaperDecision(
+      mockCandidate({
+        reasonCode: "REJECTED_BAD_RISK_REWARD",
+        action: "NO_TRADE" as never,
+        momentumScore: 62,
+        shortTermReturnPct: 0.4,
+        opportunityScore: 70,
+      }),
+    );
+    expect(decision.decision).not.toBe("TINY_B_SETUP_PAPER_ONLY");
+  });
+});
+
 describe("why no trade report", () => {
   it("includes exact blockers", () => {
     const report = buildWhyNoTradeReport({
@@ -253,8 +343,8 @@ describe("why no trade report", () => {
       riskMode: "WARMUP_MODE",
       totalCandidates: 120,
     });
-    expect(report?.finalReason).toContain("120 candidates ranked");
-    expect(report?.finalReason).toContain("MAX_OPEN_TRADES_OR_EXPOSURE");
+    expect(report?.finalReason).toContain("ranked 120");
+    expect(report?.finalReason).toContain("Capacity full");
     expect(report?.openTradesCount).toBe(3);
   });
 
@@ -264,7 +354,7 @@ describe("why no trade report", () => {
       ranked: [
         mockCandidate({
           symbol: "BASED/USD",
-          opportunityScore: 73,
+          opportunityScore: 65,
           action: "NO_TRADE" as never,
           reasonCode: "VOLATILITY_TOO_LOW",
           reasonText: "Momentum weak",
@@ -286,6 +376,8 @@ describe("why no trade report", () => {
     expect(report?.blueprintStrategyMatchDebug?.vwapReclaimMomentum.passed).toBe(false);
     expect(report?.blueprintStrategyMatchDebug?.volatilityCompressionBreakout.passed).toBe(false);
     expect(report?.blueprintStrategyMatchDebug?.trendPullbackContinuation.passed).toBe(false);
+    const missing = report?.blueprintStrategyMatchDebug?.missingConditions?.join(" ") ?? "";
+    expect(missing).not.toContain("needs OPEN_TRADE");
   });
 
   it("watch-only candidates are not labeled score-too-low in final reason", () => {

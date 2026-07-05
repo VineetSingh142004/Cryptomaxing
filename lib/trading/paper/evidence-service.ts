@@ -87,7 +87,13 @@ import { evaluateOpportunityCost } from "@/lib/trading/paper/opportunity-cost-en
 import { buildWhyNoTradeReport } from "@/lib/trading/paper/why-no-trade-report";
 import { evaluateTradeFrequencyHealth } from "@/lib/trading/paper/trade-frequency-health";
 import { buildPaperBrokerRealismStatus } from "@/lib/trading/paper/paper-broker-realism";
-import { blockIfNoBlueprintStrategy, mapStrategyForCandidate } from "@/lib/trading/paper/strategy-mapping";
+import { mapStrategyForCandidate } from "@/lib/trading/paper/strategy-mapping";
+import {
+  canOpenPaperTrade,
+  evaluatePaperDecision,
+  passedHardSafetyFilters,
+  summarizePipelineCounts,
+} from "@/lib/trading/paper/paper-decision-pipeline";
 import { minScoreForTier, resolveCandidateBlockReason } from "@/lib/trading/paper/trade-selection";
 import { explainLosingTrade } from "@/lib/trading/paper/risk-explanation";
 import { PAPER_RISK_CONFIG, serializePaperRiskConfig } from "@/lib/trading/paper/paper-risk-config";
@@ -2285,7 +2291,7 @@ export async function runPaperEvidenceStep(options?: {
 
   const split = splitCandidates(ranked);
   const topToEvaluate = ranked
-    .filter((c) => c.tradableOnConfiguredExchange && c.action === "OPEN_TRADE")
+    .filter((c) => passedHardSafetyFilters(c))
     .slice(0, SCANNER_CONFIG.topCandidates);
   const rejectedCandidates = ranked.filter((c) => c.action !== "OPEN_TRADE");
   const rejectionSummary = summarizeRejections(ranked);
@@ -2367,12 +2373,16 @@ export async function runPaperEvidenceStep(options?: {
       continue;
     }
 
-    const blueprintStrategy = blockIfNoBlueprintStrategy(candidate);
-    if (blueprintStrategy.blocked) {
+    const paperDecision = evaluatePaperDecision(candidate, { recordCaution });
+    if (!canOpenPaperTrade(paperDecision.decision)) {
       tradeReadyNotOpenedSymbols.add(candidate.symbol);
       noTradeCount++;
       continue;
     }
+    const blueprintStrategy = {
+      mapping: paperDecision.mapping,
+      debug: paperDecision.blueprint,
+    };
 
     const existingOpen = activeOpenTrades.find((t) => t.symbol === candidate.symbol);
     if (existingOpen) {
@@ -2504,8 +2514,14 @@ export async function runPaperEvidenceStep(options?: {
     }
 
     const momentum = momentumFromSnapshot(snapshot);
+    const decisionAllocation =
+      paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY"
+        ? paperDecision.allocationMultiplier
+        : recordCaution.active
+          ? recordCaution.allocationMultiplier
+          : 1;
     const strategy = evaluateControlledActiveStrategy(candidate, momentum, {
-      allocationMultiplier: recordCaution.active ? recordCaution.allocationMultiplier : 1,
+      allocationMultiplier: decisionAllocation,
     });
     const { baseAsset, quoteAsset } = parseSymbol(candidate.symbol);
     const mappedStrategy = blueprintStrategy.mapping;
@@ -2687,6 +2703,12 @@ export async function runPaperEvidenceStep(options?: {
     where: { userId, status: { in: ["CLOSED", "EXPIRED"] } },
   });
 
+  const pipelineCounts = summarizePipelineCounts(ranked, {
+    recordCaution,
+    discovered: wideResult.pipeline.coinsDiscovered,
+    evaluated: scanSymbols.length,
+  });
+
   const whyNoTradeReport = buildWhyNoTradeReport({
     tradesOpenedThisRun: tradesOpened,
     ranked,
@@ -2696,6 +2718,9 @@ export async function runPaperEvidenceStep(options?: {
     riskMode: recordCaution.dashboardLabel,
     recordCaution,
     totalCandidates: ranked.length,
+    pipelineCounts,
+    discovered: wideResult.pipeline.coinsDiscovered,
+    evaluated: scanSymbols.length,
   });
 
   const databaseWriteFailed =
@@ -2836,6 +2861,7 @@ export async function runPaperEvidenceStep(options?: {
       scanSummary: {
         rejectionSummary,
         whyNoTradeReport,
+        pipelineCounts,
         marketDataStatus,
         coingeckoStatus: wideResult.coingeckoStatus,
         krakenStatus: wideResult.krakenStatus,

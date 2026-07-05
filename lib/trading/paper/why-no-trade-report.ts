@@ -6,6 +6,10 @@ import {
   mapStrategyForCandidate,
   type BlueprintStrategyMatchDebug,
 } from "@/lib/trading/paper/strategy-mapping";
+import {
+  evaluatePaperDecision,
+  type PipelineSummaryCounts,
+} from "@/lib/trading/paper/paper-decision-pipeline";
 
 export interface WhyNoTradeReport {
   finalReason: string;
@@ -33,16 +37,16 @@ export interface WhyNoTradeReport {
     qualifiedButBlocked: number;
     selectedTradeCandidate: string | null;
   };
+  pipelineCounts: PipelineSummaryCounts;
   blueprintStrategyMatchDebug: BlueprintStrategyMatchDebug | null;
+  closestStrategy: string | null;
+  passedConditions: string[];
+  failedConditions: string[];
   simulatedLabel: "SIMULATED_PAPER_ONLY";
 }
 
-function isQualifiedAction(action: string): boolean {
-  return action === "OPEN_TRADE" || action === "OPEN_PAPER_TRADE";
-}
-
 function isWatchOnlyAction(action: string): boolean {
-  return action === "WATCH" || action === "WATCH_ONLY";
+  return action === "WATCH" || action === "WATCH_ONLY" || action === "WATCHLIST_ONLY";
 }
 
 function effectiveMinScore(
@@ -52,17 +56,18 @@ function effectiveMinScore(
   return minScoreForTier(tier) + (recordCaution?.active ? recordCaution.minScoreBoost : 0);
 }
 
-function displayReasonForBest(
-  best: ScanCandidate,
-  recordCaution?: RecordCautionModeState,
-): string {
-  return resolveCandidateBlockReason({
-    score: best.opportunityScore,
-    tier: best.riskTier,
-    reasonCode: best.reasonCode,
-    reasonText: best.reasonText,
-    recordCaution,
-  });
+function pickBestCandidate(ranked: ScanCandidate[]): ScanCandidate | null {
+  if (ranked.length === 0) return null;
+  const withDecision = ranked.map((c) => ({
+    candidate: c,
+    decision: evaluatePaperDecision(c),
+  }));
+  const openable = withDecision.find(
+    (x) => x.decision.decision === "OPEN_PAPER_TRADE" || x.decision.decision === "TINY_B_SETUP_PAPER_ONLY",
+  );
+  if (openable) return openable.candidate;
+  return [...withDecision]
+    .sort((a, b) => b.candidate.opportunityScore - a.candidate.opportunityScore)[0]?.candidate ?? null;
 }
 
 export function buildWhyNoTradeReport(input: {
@@ -76,24 +81,31 @@ export function buildWhyNoTradeReport(input: {
   capitalExposureUsedPct?: number | null;
   riskAtStopUsedPct?: number | null;
   totalCandidates: number;
+  pipelineCounts?: PipelineSummaryCounts;
+  discovered?: number;
+  evaluated?: number;
 }): WhyNoTradeReport | null {
   if (input.tradesOpenedThisRun > 0) return null;
 
   const ranked = [...input.ranked].sort((a, b) => b.opportunityScore - a.opportunityScore);
   const totalRanked = input.totalCandidates || ranked.length;
-  const best =
-    ranked.find((c) => isQualifiedAction(c.action)) ??
-    ranked[0] ??
-    null;
+  const best = pickBestCandidate(ranked);
+  const pipelineCounts =
+    input.pipelineCounts ??
+    ({
+      discovered: input.discovered ?? totalRanked,
+      evaluated: input.evaluated ?? totalRanked,
+      ranked: totalRanked,
+      failedFilters: ranked.filter((c) => c.action === "NO_TRADE" || c.action === "SKIPPED").length,
+      aPlusMatches: 0,
+      aMatches: 0,
+      bNearMisses: 0,
+      cWatchOnly: 0,
+      rejected: totalRanked,
+    } satisfies PipelineSummaryCounts);
 
-  const failedCandidates = ranked.filter((c) => !isQualifiedAction(c.action)).length;
+  const failedCandidates = ranked.filter((c) => c.action === "NO_TRADE" || c.action === "SKIPPED").length;
   const watchlistOnly = ranked.filter((c) => isWatchOnlyAction(c.action)).length;
-  const qualifiedButBlocked = ranked.filter(
-    (c) =>
-      isQualifiedAction(c.action) &&
-      c.reasonCode !== "TRADE_READY" &&
-      c.action !== "OPEN_TRADE",
-  ).length;
 
   const blockedBy = {
     SCORE_TOO_LOW: input.rejectionSummary.SCORE_TOO_LOW ?? 0,
@@ -105,6 +117,7 @@ export function buildWhyNoTradeReport(input: {
     FAKE_PUMP:
       (input.rejectionSummary.FAKE_PUMP ?? 0) +
       (input.rejectionSummary.WATCH_ONLY_FAKE_PUMP_RISK ?? 0),
+    NO_BLUEPRINT_STRATEGY_MATCH: input.rejectionSummary.NO_BLUEPRINT_STRATEGY_MATCH ?? 0,
     CAUTION_MODE: input.recordCaution?.active ? 1 : 0,
     CAPACITY: input.availableSlots <= 0 ? 1 : 0,
   };
@@ -113,37 +126,53 @@ export function buildWhyNoTradeReport(input: {
   let requiredThreshold: string | null = null;
   let actualValue: string | null = null;
   let blueprintStrategyMatchDebug: BlueprintStrategyMatchDebug | null = null;
+  let closestStrategy: string | null = null;
+  let passedConditions: string[] = [];
+  let failedConditions: string[] = [];
+
+  const paperDecision = best ? evaluatePaperDecision(best, { recordCaution: input.recordCaution }) : null;
 
   if (input.availableSlots <= 0) {
     exactBlocker = "MAX_OPEN_TRADES_OR_EXPOSURE";
     requiredThreshold = "available slot > 0";
     actualValue = `${input.openTradesCount} open, ${input.availableSlots} slots`;
-  } else if (best) {
-    const mapping = mapStrategyForCandidate(best);
-    const blueprintDebug = evaluateAllBlueprintStrategies(best);
-    blueprintStrategyMatchDebug = blueprintDebug;
+  } else if (best && paperDecision) {
+    blueprintStrategyMatchDebug = paperDecision.blueprint;
+    closestStrategy = paperDecision.closestStrategy;
+    passedConditions = paperDecision.passedConditions;
+    failedConditions = paperDecision.failedConditions;
     const baseMin = minScoreForTier(best.riskTier);
     const effectiveMin = effectiveMinScore(best.riskTier, input.recordCaution);
 
-    if (
-      blueprintDebug.finalDecision !== "TRADE_ALLOWED" &&
-      best.opportunityScore >= baseMin
-    ) {
-      exactBlocker = "NO_BLUEPRINT_STRATEGY_MATCH";
-      requiredThreshold = "One of 3 blueprint strategies (VWAP Reclaim / Vol Compression / Trend Pullback)";
-      actualValue = blueprintDebug.paperModeSuggestion;
-    } else if (mapping.verdict === "RESEARCH_ONLY" || mapping.verdict === "WATCH_ONLY") {
-      exactBlocker = "NO_BLUEPRINT_STRATEGY_MATCH";
-      requiredThreshold = "One of 3 blueprint strategies";
-      actualValue = mapping.verdict;
-    } else if (input.recordCaution?.active && best.opportunityScore >= baseMin && best.opportunityScore < effectiveMin) {
-      exactBlocker = "CAUTION_MODE";
-      requiredThreshold = `${effectiveMin} effective min for ${best.riskTier} (base ${baseMin} + caution boost)`;
-      actualValue = String(best.opportunityScore);
-    } else if (input.recordCaution?.pauseNewEntries) {
+    if (input.recordCaution?.pauseNewEntries) {
       exactBlocker = "CAUTION_MODE";
       requiredThreshold = "cooldown / caution pause";
       actualValue = input.recordCaution.dashboardMessage;
+    } else if (
+      input.recordCaution?.active &&
+      best.opportunityScore >= baseMin &&
+      best.opportunityScore < effectiveMin
+    ) {
+      exactBlocker = "CAUTION_MODE";
+      requiredThreshold = `${effectiveMin} effective min for ${best.riskTier} (base ${baseMin} + caution boost)`;
+      actualValue = String(best.opportunityScore);
+    } else if (paperDecision.decision === "WATCH_ONLY" || paperDecision.decision === "RESEARCH_ONLY") {
+      exactBlocker = "NO_BLUEPRINT_STRATEGY_MATCH";
+      requiredThreshold = "One of 3 blueprint strategies (VWAP Reclaim / Vol Compression / Trend Pullback)";
+      actualValue = paperDecision.setupTier;
+    } else if (
+      best.opportunityScore >= baseMin &&
+      (paperDecision.blockedReason || blueprintStrategyMatchDebug?.finalReason)
+    ) {
+      exactBlocker = "NO_BLUEPRINT_STRATEGY_MATCH";
+      requiredThreshold = "One of 3 blueprint strategies";
+      actualValue = paperDecision.setupTier;
+    } else if (
+      best.reasonCode === "REJECTED_BAD_RISK_REWARD" ||
+      best.reasonCode === "RISK_REWARD_TOO_WEAK"
+    ) {
+      exactBlocker = "BAD_RISK_REWARD";
+      actualValue = best.reasonText;
     } else if (best.reasonCode === "SCORE_TOO_LOW" && best.opportunityScore >= baseMin) {
       exactBlocker = input.recordCaution?.active ? "CAUTION_MODE" : "CONFIDENCE_OR_FILTER";
       requiredThreshold = input.recordCaution?.active
@@ -154,57 +183,47 @@ export function buildWhyNoTradeReport(input: {
       exactBlocker = "SCORE_TOO_LOW";
       requiredThreshold = `${baseMin} for ${best.riskTier}`;
       actualValue = String(best.opportunityScore);
-    } else if (
-      best.reasonCode === "REJECTED_BAD_RISK_REWARD" ||
-      best.reasonCode === "RISK_REWARD_TOO_WEAK"
-    ) {
-      exactBlocker = "BAD_RISK_REWARD";
-      actualValue = best.reasonText;
-    } else if (!isQualifiedAction(best.action)) {
-      exactBlocker = best.reasonCode;
-      actualValue = best.reasonText;
-    } else if (input.recordCaution?.active) {
-      exactBlocker = "CAUTION_MODE";
-      actualValue = input.recordCaution.dashboardMessage;
+    } else {
+      exactBlocker = paperDecision.blockedReason ? "NO_BLUEPRINT_STRATEGY_MATCH" : best.reasonCode;
+      actualValue = paperDecision.blockedReason ?? best.reasonText;
     }
   }
 
-  const safeFailed = Math.min(failedCandidates, totalRanked);
-  const blockerDetail = exactBlocker
-    ? exactBlocker === "SCORE_TOO_LOW" && best && best.opportunityScore >= minScoreForTier(best.riskTier)
-      ? displayReasonForBest(best, input.recordCaution)
+  const blockerDetail =
+    exactBlocker === "MAX_OPEN_TRADES_OR_EXPOSURE"
+      ? `Capacity full — ${input.openTradesCount} open, ${input.availableSlots} slots available.`
+      : exactBlocker === "NO_BLUEPRINT_STRATEGY_MATCH" && paperDecision
+      ? paperDecision.blockedReason ?? blueprintStrategyMatchDebug?.finalReason ?? "No blueprint strategy matched."
       : exactBlocker === "CAUTION_MODE"
         ? "Score passed, but blocked by caution mode."
-        : exactBlocker === "NO_BLUEPRINT_STRATEGY_MATCH"
-          ? blueprintStrategyMatchDebug?.finalReason ??
-            "Score passed, but no blueprint strategy match — WATCH_ONLY in paper mode."
-          : exactBlocker === "CONFIDENCE_OR_FILTER"
-            ? displayReasonForBest(best!, input.recordCaution)
+        : exactBlocker === "CONFIDENCE_OR_FILTER" && best
+          ? resolveCandidateBlockReason({
+              score: best.opportunityScore,
+              tier: best.riskTier,
+              reasonCode: best.reasonCode,
+              reasonText: best.reasonText,
+              recordCaution: input.recordCaution,
+            })
           : exactBlocker === "BAD_RISK_REWARD"
             ? "Score passed, but reward/risk too weak."
-            : `${exactBlocker}: ${best ? resolveCandidateBlockReason({
-                score: best.opportunityScore,
-                tier: best.riskTier,
-                reasonCode: best.reasonCode,
-                reasonText: best.reasonText,
-                recordCaution: input.recordCaution,
-              }) : "blocked"}`
-    : best
-      ? resolveCandidateBlockReason({
-          score: best.opportunityScore,
-          tier: best.riskTier,
-          reasonCode: best.reasonCode,
-          reasonText: best.reasonText,
-          recordCaution: input.recordCaution,
-        })
-      : "blocked";
+            : best
+              ? resolveCandidateBlockReason({
+                  score: best.opportunityScore,
+                  tier: best.riskTier,
+                  reasonCode: best.reasonCode,
+                  reasonText: best.reasonText,
+                  recordCaution: input.recordCaution,
+                })
+              : "blocked";
+
+  const pipelineLine =
+    `Discovered ${pipelineCounts.discovered}, evaluated ${pipelineCounts.evaluated}, ranked ${pipelineCounts.ranked}, ` +
+    `failed filters ${pipelineCounts.failedFilters}, A+ ${pipelineCounts.aPlusMatches}, A ${pipelineCounts.aMatches}, ` +
+    `B near-miss ${pipelineCounts.bNearMisses}, C watch-only ${pipelineCounts.cWatchOnly}, rejected ${pipelineCounts.rejected}.`;
 
   const finalReason = best
-    ? `${totalRanked} candidates ranked. ${safeFailed} failed filters` +
-      (watchlistOnly > 0 ? `, ${watchlistOnly} watchlist-only` : "") +
-      (qualifiedButBlocked > 0 ? `, ${qualifiedButBlocked} qualified but blocked` : "") +
-      `. ${best.symbol} best (${best.opportunityScore.toFixed(0)}) — ${blockerDetail}`
-    : `No trade opened — ${totalRanked} candidates scanned, none tradable after filters.`;
+    ? `${pipelineLine} Best ${best.symbol} (${best.opportunityScore.toFixed(0)}) — closest ${closestStrategy ?? "none"} — ${blockerDetail}`
+    : `No trade opened — ${pipelineLine}`;
 
   return {
     finalReason,
@@ -212,10 +231,10 @@ export function buildWhyNoTradeReport(input: {
       ? {
           symbol: best.symbol,
           score: best.opportunityScore,
-          strategy: mapStrategyForCandidate(best).strategyName,
+          strategy: mapStrategyForCandidate(best, blueprintStrategyMatchDebug ?? undefined).strategyName,
           status: best.action,
           reasonCode: best.reasonCode,
-          reasonText: displayReasonForBest(best, input.recordCaution),
+          reasonText: blockerDetail,
         }
       : null,
     exactBlocker,
@@ -229,12 +248,16 @@ export function buildWhyNoTradeReport(input: {
     blockedBy,
     candidateCounts: {
       totalRanked,
-      failedFilters: safeFailed,
+      failedFilters: Math.min(failedCandidates, totalRanked),
       watchlistOnly,
-      qualifiedButBlocked,
+      qualifiedButBlocked: pipelineCounts.bNearMisses + pipelineCounts.cWatchOnly,
       selectedTradeCandidate: best?.symbol ?? null,
     },
+    pipelineCounts,
     blueprintStrategyMatchDebug,
+    closestStrategy,
+    passedConditions,
+    failedConditions,
     simulatedLabel: "SIMULATED_PAPER_ONLY",
   };
 }

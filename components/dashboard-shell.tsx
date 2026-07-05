@@ -909,6 +909,7 @@ export function DashboardShell() {
   }
 
   async function runPaperEvidenceStep() {
+    if (paperRunLoading) return;
     setPaperRunLoading(true);
     setPaperRunError(null);
     setPaperRunWarnings([]);

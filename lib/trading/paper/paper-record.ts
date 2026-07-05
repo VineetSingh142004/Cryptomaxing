@@ -79,7 +79,8 @@ export interface RecordActivityEvent {
     | "REJECTION_SUMMARY"
     | "CARRIED_TRADE_UPDATED"
     | "THESIS_INVALIDATED"
-    | "ACCOUNTING_SYNC";
+    | "ACCOUNTING_SYNC"
+    | "RECORD_HISTORY_SYNC";
   timestamp: string;
   summary: string;
   simulatedLabel: "SIMULATED_PAPER_ONLY";
@@ -1022,11 +1023,11 @@ export function buildRecordActivityFeed(
       });
     }
 
-    if (run.tradesClosed > 0 && !runCompleted) {
+    if (run.tradesClosed > 0) {
       events.push({
         type: "TRADE_CLOSED",
         timestamp: ts,
-        summary: `Closed ${run.tradesClosed} paper trade(s) in this record.`,
+        summary: `Closed ${run.tradesClosed} paper trade(s) in this run.`,
         simulatedLabel: "SIMULATED_PAPER_ONLY",
       });
     }
@@ -1047,21 +1048,12 @@ export function buildRecordActivityFeed(
   ) {
     const newClosed = options.newTradesClosedInRecord ?? 0;
     const carriedClosed = options.carriedTradesClosedInRecord ?? 0;
-    if (newClosed + carriedClosed > 0) {
-      events.unshift({
-        type: "TRADE_CLOSED",
-        timestamp: runs[0]?.startedAt.toISOString() ?? new Date().toISOString(),
-        summary: `Record trade history: ${newClosed} closed new trade(s), ${carriedClosed} closed carried trade(s).`,
-        simulatedLabel: "SIMULATED_PAPER_ONLY",
-      });
-    } else {
-      events.unshift({
-        type: "ACCOUNTING_SYNC",
-        timestamp: runs[0]?.startedAt.toISOString() ?? new Date().toISOString(),
-        summary: `Record trade history synced: ${newClosed} closed new trade(s), ${carriedClosed} closed carried trade(s).`,
-        simulatedLabel: "SIMULATED_PAPER_ONLY",
-      });
-    }
+    events.unshift({
+      type: "RECORD_HISTORY_SYNC",
+      timestamp: runs[0]?.startedAt.toISOString() ?? new Date().toISOString(),
+      summary: `Record trade history synced: ${newClosed} closed new trade(s), ${carriedClosed} closed carried trade(s).`,
+      simulatedLabel: "SIMULATED_PAPER_ONLY",
+    });
   }
 
   return events.slice(0, limit);
