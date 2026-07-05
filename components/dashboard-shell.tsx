@@ -1510,12 +1510,44 @@ export function DashboardShell() {
                   <div className="rounded-lg border p-4 space-y-2">
                     <p className="text-sm font-semibold">Why No Trade Opened (SIMULATED)</p>
                     <p className="text-xs">{data.paper_evidence.whyNoTradeReport.finalReason}</p>
+                    {(data.paper_evidence.whyNoTradeReport as { blueprintStrategyMatchDebug?: { vwapReclaimMomentum: { passed: boolean; summary: string }; volatilityCompressionBreakout: { passed: boolean; summary: string }; trendPullbackContinuation: { passed: boolean; summary: string }; missingConditions?: string[]; finalDecision?: string; paperModeSuggestion?: string } }).blueprintStrategyMatchDebug && (
+                      <div className="text-xs space-y-1 border-t pt-2">
+                        <p className="font-medium">Blueprint Strategy Match Debug</p>
+                        {(() => {
+                          const dbg = (data.paper_evidence!.whyNoTradeReport as { blueprintStrategyMatchDebug: { vwapReclaimMomentum: { passed: boolean; summary: string }; volatilityCompressionBreakout: { passed: boolean; summary: string }; trendPullbackContinuation: { passed: boolean; summary: string }; missingConditions?: string[]; finalDecision?: string; paperModeSuggestion?: string } }).blueprintStrategyMatchDebug;
+                          return (
+                            <>
+                              <p>VWAP Reclaim Momentum: {dbg.vwapReclaimMomentum.passed ? "PASS" : "FAIL"} — {dbg.vwapReclaimMomentum.summary}</p>
+                              <p>Volatility Compression Breakout: {dbg.volatilityCompressionBreakout.passed ? "PASS" : "FAIL"} — {dbg.volatilityCompressionBreakout.summary}</p>
+                              <p>Trend Pullback Continuation: {dbg.trendPullbackContinuation.passed ? "PASS" : "FAIL"} — {dbg.trendPullbackContinuation.summary}</p>
+                              <p>Missing: {(dbg.missingConditions ?? []).join("; ") || "none"}</p>
+                              <p>Final decision: {dbg.finalDecision ?? "—"} · Paper: {dbg.paperModeSuggestion ?? "—"}</p>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {isCurrentRecordView && data?.paper_evidence?.tradeFrequencyHealth && (
                   <div className="rounded-lg border p-4 space-y-2">
                     <p className="text-sm font-semibold">Trade Frequency Health (SIMULATED)</p>
+                    <div className="text-xs space-y-0.5">
+                      <p>Candidates scanned: {(data.paper_evidence.tradeFrequencyHealth as { candidatesScanned?: number }).candidatesScanned ?? data.paper_evidence.recordScanner?.pipeline?.finalCandidates ?? "—"}</p>
+                      <p>Trades opened: {data.paper_evidence.currentRecord?.newTradesOpened ?? "—"}</p>
+                      <p>
+                        Candidates per trade:{" "}
+                        {data.paper_evidence.tradeFrequencyHealth.candidatesPerOpenedTrade !== null &&
+                        data.paper_evidence.tradeFrequencyHealth.candidatesPerOpenedTrade !== undefined
+                          ? data.paper_evidence.tradeFrequencyHealth.candidatesPerOpenedTrade.toFixed(0)
+                          : "—"}
+                      </p>
+                      <p>
+                        Too strict:{" "}
+                        {data.paper_evidence.tradeFrequencyHealth.tooStrict ? "YES — review thresholds" : "NO"}
+                      </p>
+                    </div>
                     <p className="text-xs">{data.paper_evidence.tradeFrequencyHealth.recommendation}</p>
                   </div>
                 )}
@@ -1650,7 +1682,7 @@ export function DashboardShell() {
                                 c.action ??
                                 "—"}{" "}
                               — {c.reasonCode ?? c.reason ?? "—"}
-                              {c.reason && c.reasonCode === "SCORE_TOO_LOW" ? ` (${c.reason})` : ""}
+                              {c.reason ? ` (${c.reason})` : ""}
                             </li>
                           ))}
                         </ul>

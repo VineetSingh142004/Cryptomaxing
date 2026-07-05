@@ -378,6 +378,82 @@ describe("export filename", () => {
   });
 });
 
+describe("export equity sync", () => {
+  it("current equity equals starting equity plus total record P&L", async () => {
+    setupPrismaMocks(2, 10);
+    vi.mocked(prisma.paperTrade.findMany).mockImplementation(async (args) => {
+      if (args?.where && "status" in args.where && args.where.status === "OPEN") {
+        return [];
+      }
+      return [
+        mockTrade({
+          id: "ada-closed",
+          symbol: "ADA/USD",
+          recordId: "rec-active",
+          status: "CLOSED",
+          result: "LOSS",
+          netPaperPnl: -18.6465,
+          closedAt: new Date("2026-07-04T12:00:00Z"),
+        }),
+      ];
+    });
+    vi.mocked(prisma.paperRecord.findFirst).mockResolvedValue({
+      id: "rec-active",
+      userId: "u1",
+      recordNumber: 5,
+      recordName: "V5",
+      strategyVersion: "v0.9-loss-shield",
+      startedAt: new Date("2026-07-01"),
+      endedAt: null,
+      status: "ACTIVE",
+      startingPaperBalance: 9617.0806,
+      endingPaperBalance: null,
+      startingRealizedPnl: 0,
+      endingRealizedPnl: null,
+      startingUnrealizedPnl: 0,
+      endingUnrealizedPnl: null,
+      startingTradeCount: 0,
+      endingTradeCount: null,
+      notes: null,
+      createdAt: new Date("2026-07-01"),
+      updatedAt: new Date("2026-07-01"),
+    } as never);
+    vi.mocked(prisma.paperRecord.findMany).mockResolvedValue([
+      {
+        id: "rec-active",
+        userId: "u1",
+        recordNumber: 5,
+        recordName: "V5",
+        strategyVersion: "v0.9-loss-shield",
+        startedAt: new Date("2026-07-01"),
+        endedAt: null,
+        status: "ACTIVE",
+        startingPaperBalance: 9617.0806,
+        endingPaperBalance: null,
+        startingRealizedPnl: 0,
+        endingRealizedPnl: null,
+        startingUnrealizedPnl: 0,
+        endingUnrealizedPnl: null,
+        startingTradeCount: 0,
+        endingTradeCount: null,
+        notes: null,
+        createdAt: new Date("2026-07-01"),
+        updatedAt: new Date("2026-07-01"),
+      },
+    ] as never);
+
+    const text = await buildPaperExportLog({
+      userId: "u1",
+      generatedAt: new Date("2026-07-04T18:00:00Z"),
+      mode: "CURRENT_RECORD_EXPORT",
+    });
+    expect(text).toContain("Starting equity (SIM): 9617.0806");
+    expect(text).toContain("Total record P&L (SIM): -18.6465");
+    expect(text).toContain("Current equity (SIM): 9598.4341");
+    expect(text).toContain("Current equity = starting equity + total record P&L");
+  });
+});
+
 describe("export failure is not a paper run error", () => {
   it("uses separate export status values from run errors", () => {
     const exportStatuses = ["EXPORT_READY", "EXPORT_RUNNING", "EXPORT_FAILED", "EXPORT_DOWNLOADED"] as const;

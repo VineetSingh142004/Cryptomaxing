@@ -9,8 +9,10 @@ import { evaluateTradeFrequencyHealth } from "@/lib/trading/paper/trade-frequenc
 import { buildWhyNoTradeReport } from "@/lib/trading/paper/why-no-trade-report";
 import {
   blockIfNoBlueprintStrategy,
+  evaluateAllBlueprintStrategies,
   mapStrategyForCandidate,
 } from "@/lib/trading/paper/strategy-mapping";
+import { formatScoreTooLowMessage, minScoreForTier, resolveCandidateBlockReason } from "@/lib/trading/paper/trade-selection";
 import { buildPaperBrokerRealismStatus } from "@/lib/trading/paper/paper-broker-realism";
 import { evaluateRecordCautionMode } from "@/lib/trading/paper/profit-protection";
 import { buildPaperPerformanceSummary } from "@/lib/trading/paper/performance-summary";
@@ -254,6 +256,77 @@ describe("why no trade report", () => {
     expect(report?.finalReason).toContain("120 candidates ranked");
     expect(report?.finalReason).toContain("MAX_OPEN_TRADES_OR_EXPOSURE");
     expect(report?.openTradesCount).toBe(3);
+  });
+
+  it("explains all three blueprint strategy checks when no match", () => {
+    const report = buildWhyNoTradeReport({
+      tradesOpenedThisRun: 0,
+      ranked: [
+        mockCandidate({
+          symbol: "BASED/USD",
+          opportunityScore: 73,
+          action: "NO_TRADE" as never,
+          reasonCode: "VOLATILITY_TOO_LOW",
+          reasonText: "Momentum weak",
+          momentumScore: 40,
+          trendScore: 40,
+          breakoutScore: 30,
+          volatilityScore: 30,
+          shortTermReturnPct: 0.1,
+        }),
+      ],
+      rejectionSummary: { VOLATILITY_TOO_LOW: 120 },
+      openTradesCount: 0,
+      availableSlots: 3,
+      riskMode: "WARMUP_MODE",
+      totalCandidates: 120,
+    });
+    expect(report?.exactBlocker).toBe("NO_BLUEPRINT_STRATEGY_MATCH");
+    expect(report?.blueprintStrategyMatchDebug).not.toBeNull();
+    expect(report?.blueprintStrategyMatchDebug?.vwapReclaimMomentum.passed).toBe(false);
+    expect(report?.blueprintStrategyMatchDebug?.volatilityCompressionBreakout.passed).toBe(false);
+    expect(report?.blueprintStrategyMatchDebug?.trendPullbackContinuation.passed).toBe(false);
+  });
+
+  it("watch-only candidates are not labeled score-too-low in final reason", () => {
+    const report = buildWhyNoTradeReport({
+      tradesOpenedThisRun: 0,
+      ranked: [
+        mockCandidate({
+          opportunityScore: 65,
+          riskTier: "MAJOR",
+          action: "NO_TRADE" as never,
+          reasonCode: "SCORE_TOO_LOW",
+          reasonText: formatScoreTooLowMessage(65, "MAJOR"),
+        }),
+      ],
+      rejectionSummary: { SCORE_TOO_LOW: 1 },
+      openTradesCount: 0,
+      availableSlots: 3,
+      riskMode: "WARMUP_MODE",
+      totalCandidates: 1,
+    });
+    expect(report?.finalReason).not.toContain("65 below required 60");
+    expect(report?.finalReason).toMatch(/passed|blueprint|confidence|filter/i);
+  });
+});
+
+describe("score threshold messages", () => {
+  it("score 65 required 60 never says below required", () => {
+    const msg = resolveCandidateBlockReason({
+      score: 65,
+      tier: "MAJOR",
+      reasonCode: "SCORE_TOO_LOW",
+      reasonText: formatScoreTooLowMessage(65, "MAJOR"),
+    });
+    expect(msg).not.toContain("65 below required 60");
+    expect(msg).toContain("passed");
+  });
+
+  it("uses effective caution threshold in score message", () => {
+    const msg = formatScoreTooLowMessage(65, "MAJOR", minScoreForTier("MAJOR") + 12);
+    expect(msg).toContain("below required 72");
+    expect(msg).not.toContain("below required 60");
   });
 });
 

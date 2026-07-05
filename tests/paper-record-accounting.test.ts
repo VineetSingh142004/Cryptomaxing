@@ -345,6 +345,28 @@ describe("current record accounting sync", () => {
     expect(accounting.cleanFreshStart.blockingSymbols).toContain("ADA/USD");
   });
 
+  it("current equity equals starting plus total record P&L after closed loss", () => {
+    const closedAda = mockTrade({
+      id: "ada-closed",
+      symbol: "ADA/USD",
+      status: "CLOSED",
+      result: "LOSS",
+      netPaperPnl: { toNumber: () => -18.6465 } as never,
+      recordId: "rec-v5",
+    });
+    const accounting = buildCurrentRecordAccounting({
+      record: {
+        id: "rec-v5",
+        startingPaperBalance: { toNumber: () => 9617.0806 } as never,
+      } as PaperRecord,
+      recordTrades: [closedAda],
+      markMap: new Map(),
+    });
+    expect(accounting.totalRecordPnl).toBeCloseTo(-18.6465, 4);
+    expect(accounting.currentEquity).toBeCloseTo(9598.4341, 4);
+    expect(accounting.currentEquity).toBeCloseTo(accounting.startingEquity + accounting.totalRecordPnl, 4);
+  });
+
   it("dashboard and export metrics stay aligned via shared accounting", () => {
     const entry = 0.48;
     const size = 10387.5;

@@ -281,13 +281,16 @@ export function buildCurrentRecordAccounting(input: {
     .map((t) => buildTradeDetail(t, markMap, true));
 
   const cashBalance = breakdown.startingPaperBalance + breakdown.newRecordRealizedPnl + carriedStats.realizedPnlSinceCarry;
+  const startingEquity = breakdown.startingPaperBalance;
+  const totalRecordPnl = breakdown.recordPnl;
+  const currentEquity = startingEquity + totalRecordPnl;
 
   return {
     recordId: input.record.id,
-    startingEquity: breakdown.startingPaperBalance,
-    currentEquity: breakdown.currentPaperBalance,
+    startingEquity,
+    currentEquity,
     cashBalance,
-    totalRecordPnl: breakdown.recordPnl,
+    totalRecordPnl,
     newRealizedPnl: breakdown.newRecordRealizedPnl,
     newUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
     carriedRealizedPnl: carriedStats.realizedPnlSinceCarry,

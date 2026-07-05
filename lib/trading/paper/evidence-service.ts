@@ -88,6 +88,7 @@ import { buildWhyNoTradeReport } from "@/lib/trading/paper/why-no-trade-report";
 import { evaluateTradeFrequencyHealth } from "@/lib/trading/paper/trade-frequency-health";
 import { buildPaperBrokerRealismStatus } from "@/lib/trading/paper/paper-broker-realism";
 import { blockIfNoBlueprintStrategy, mapStrategyForCandidate } from "@/lib/trading/paper/strategy-mapping";
+import { minScoreForTier, resolveCandidateBlockReason } from "@/lib/trading/paper/trade-selection";
 import { explainLosingTrade } from "@/lib/trading/paper/risk-explanation";
 import { PAPER_RISK_CONFIG, serializePaperRiskConfig } from "@/lib/trading/paper/paper-risk-config";
 import { buildActiveTradingRules } from "@/lib/trading/paper/active-trading-rules";
@@ -839,20 +840,33 @@ export async function getLastRunScannerSummary(userId: string, record?: RecordSc
   const summary = (lastRun.scanSummary ?? {}) as Record<string, unknown>;
   const rejectionSummary = (summary.rejectionSummary ?? {}) as Record<string, number>;
 
-  const allCandidates = lastRun.candidates.map((c) => ({
-    symbol: c.symbol,
-    source: c.source,
-    price: toNumber(c.price),
-    score: toNumber(c.opportunityScore),
-    spreadBps: toNumber(c.spreadBps),
-    volume24hUsd: toNumber(c.volume24hUsd),
-    change24hPct: toNumber(c.change24hPct),
-    riskTier: c.riskTier,
-    tradableOnConfiguredExchange: c.tradableOnConfiguredExchange,
-    action: c.action,
-    reason: c.reasonText,
-    reasonCode: c.reasonCode,
-  }));
+  const allCandidates = lastRun.candidates.map((c) => {
+    const score = toNumber(c.opportunityScore);
+    const tier = c.riskTier as ScanCandidate["riskTier"];
+    const reason = resolveCandidateBlockReason({
+      score,
+      tier,
+      reasonCode: c.reasonCode ?? "",
+      reasonText: c.reasonText ?? "",
+    });
+    return {
+      symbol: c.symbol,
+      source: c.source,
+      price: toNumber(c.price),
+      score,
+      spreadBps: toNumber(c.spreadBps),
+      volume24hUsd: toNumber(c.volume24hUsd),
+      change24hPct: toNumber(c.change24hPct),
+      riskTier: c.riskTier,
+      tradableOnConfiguredExchange: c.tradableOnConfiguredExchange,
+      action: c.action,
+      reason,
+      reasonCode:
+        score >= minScoreForTier(tier) && c.reasonCode === "SCORE_TOO_LOW"
+          ? "WATCH_ONLY"
+          : c.reasonCode,
+    };
+  });
 
   const tradesOpenedThisRun = lastRun.tradesOpened ?? 0;
   const topCandidates = dedupeBySymbol(allCandidates).slice(0, 5).map((c) => ({

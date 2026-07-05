@@ -12,6 +12,8 @@ import { verifyPaperSafetyGates } from "@/lib/trading/paper/safety-verification"
 import { SCANNER_CONFIG } from "@/lib/trading/paper/scanner-config";
 import { serializePaperRiskConfig } from "@/lib/trading/paper/paper-risk-config";
 import { mapCandidateRecommendationLabel, summarizeRejectionCategories } from "@/lib/trading/paper/paper-labels";
+import { formatBlueprintStrategyMatchDebugLines } from "@/lib/trading/paper/strategy-mapping";
+import { evaluateTradeFrequencyHealth } from "@/lib/trading/paper/trade-frequency-health";
 import {
   buildPaperPerformanceSummary,
   formatMetric,
@@ -702,14 +704,25 @@ function buildRecordSummaryLines(
     };
   },
 ): string[] {
+  const startingEquity =
+    metrics.startingEquity ??
+    (typeof record.startingPaperBalance === "number"
+      ? record.startingPaperBalance
+      : toNumber(record.startingPaperBalance as never) ?? 0);
+  const recordPnl = metrics.recordPnl ?? 0;
+  const resolvedCurrentEquity =
+    record.status === "ARCHIVED"
+      ? (record.endingPaperBalance ?? startingEquity + recordPnl)
+      : metrics.currentEquity ?? startingEquity + recordPnl;
+
   const lines = [
     recordHeading(record),
-    line("Starting equity (SIM)", formatMetric(metrics.startingEquity ?? record.startingPaperBalance)),
+    line("Starting equity (SIM)", formatMetric(startingEquity)),
   ];
   if (record.status === "ARCHIVED") {
     lines.push(line("Ending equity (SIM)", formatMetric(record.endingPaperBalance)));
   } else {
-    lines.push(line("Current equity (SIM)", formatMetric(metrics.currentEquity ?? record.startingPaperBalance)));
+    lines.push(line("Current equity (SIM)", formatMetric(resolvedCurrentEquity)));
     if (metrics.cashBalance !== undefined) {
       lines.push(line("Cash balance (SIM)", formatMetric(metrics.cashBalance)));
     }
@@ -961,7 +974,20 @@ function buildCurrentRecordRejectionSection(run: PaperEvidenceRun | undefined): 
 function buildBlueprintExportSection(run: PaperEvidenceRun | undefined): string {
   const summary = (run?.scanSummary ?? {}) as Record<string, unknown>;
   const why = summary.whyNoTradeReport as
-    | { finalReason?: string; exactBlocker?: string; blockedBy?: Record<string, number> }
+    | {
+        finalReason?: string;
+        exactBlocker?: string;
+        blockedBy?: Record<string, number>;
+        blueprintStrategyMatchDebug?: {
+          vwapReclaimMomentum: { passed: boolean; summary: string; missingConditions: string[] };
+          volatilityCompressionBreakout: { passed: boolean; summary: string; missingConditions: string[] };
+          trendPullbackContinuation: { passed: boolean; summary: string; missingConditions: string[] };
+          missingConditions?: string[];
+          finalDecision?: string;
+          paperModeSuggestion?: string;
+          finalReason?: string;
+        };
+      }
     | undefined;
   const lines = [
     line("Why no trade opened", why?.finalReason ?? run?.reasonText ?? "—"),
@@ -972,8 +998,48 @@ function buildBlueprintExportSection(run: PaperEvidenceRun | undefined): string 
       if (v > 0) lines.push(line(`Blocked ${k}`, v));
     }
   }
+  const debug = why?.blueprintStrategyMatchDebug;
+  if (debug) {
+    lines.push("", "Blueprint Strategy Match Debug:");
+    lines.push(...formatBlueprintStrategyMatchDebugLines(debug as never));
+  }
   lines.push(line("Paper broker realism", "See dashboard — partial fills/latency NOT_IMPLEMENTED"));
   return section("SECTION 7B — BLUEPRINT ALIGNMENT (SIMULATED)", lines);
+}
+
+function buildTradeFrequencyHealthSection(
+  recordRuns: PaperEvidenceRun[],
+  accounting: CurrentRecordAccounting | null,
+): string {
+  if (!accounting) {
+    return section("SECTION 1C — TRADE FREQUENCY HEALTH", ["No active record accounting."]);
+  }
+  const scopedRuns = recordRuns;
+  const candidatesScanned = scopedRuns.reduce((sum, r) => sum + (r.candidatesStored ?? 0), 0);
+  const runsCompleted = scopedRuns.filter((r) => r.status === "COMPLETED").length;
+  const health = evaluateTradeFrequencyHealth({
+    runsCompleted,
+    candidatesScanned,
+    candidatesEvaluated: candidatesScanned,
+    tradesOpened: accounting.newTradesOpened,
+    tradesClosed: accounting.newClosedTrades,
+    rejections: sumRecordRejectionCounts(scopedRuns),
+    noTradeRuns: scopedRuns.filter((r) => (r.tradesOpened ?? 0) === 0).length,
+    averageHoldingHours: null,
+    openSlotsUsed: accounting.totalOpenTrades,
+    maxOpenSlots: 5,
+  });
+  const cpo =
+    health.candidatesPerOpenedTrade !== null
+      ? health.candidatesPerOpenedTrade.toFixed(0)
+      : "UNKNOWN";
+  return section("SECTION 1C — TRADE FREQUENCY HEALTH (SIMULATED)", [
+    line("Candidates scanned in record", candidatesScanned),
+    line("Trades opened in record", accounting.newTradesOpened),
+    line("Candidates per opened trade", cpo),
+    line("Too strict warning", health.tooStrict ? "YES" : "NO"),
+    line("Recommendation", health.recommendation),
+  ]);
 }
 
 function buildCurrentRecordActivitySection(
@@ -1253,12 +1319,29 @@ function buildExportSections(data: PaperExportData): string[] {
       data.recordHistory.find((r) => r.recordId === data.recordId) ??
       (data.activeRecord?.recordId === data.recordId ? data.activeRecord : null);
     if (record) {
-      const metrics = data.recordHistory.find((r) => r.recordId === record.recordId) ?? {
-        recordPnl: 0,
-        closedTrades: 0,
-        winRate: null,
-        profitFactor: null,
-      };
+      const historyMetrics = data.recordHistory.find((r) => r.recordId === record.recordId);
+      const accounting =
+        data.currentRecordAccounting?.recordId === record.recordId
+          ? data.currentRecordAccounting
+          : null;
+      const metrics = accounting
+        ? {
+            recordPnl: accounting.totalRecordPnl,
+            closedTrades: accounting.newClosedTrades,
+            winRate: historyMetrics?.winRate ?? null,
+            profitFactor: historyMetrics?.profitFactor ?? null,
+            newTradesOpened: accounting.newTradesOpened,
+            newOpenTrades: accounting.newOpenTrades,
+            carriedOpenTrades: accounting.carriedOpenTrades,
+            startingEquity: accounting.startingEquity,
+            currentEquity: accounting.currentEquity,
+          }
+        : (historyMetrics ?? {
+            recordPnl: 0,
+            closedTrades: 0,
+            winRate: null,
+            profitFactor: null,
+          });
       parts.push(
         section(`RECORD #${record.recordNumber} — ${record.recordName}`, [
           ...buildRecordSummaryLines(record, metrics),
@@ -1290,6 +1373,7 @@ function buildExportSections(data: PaperExportData): string[] {
         if (mark !== null) markMap.set(t.id, mark);
       }
       parts.push(buildCurrentRecordBotHealthSection(recordRuns, data.activeRecord, data.trades));
+      parts.push(buildTradeFrequencyHealthSection(recordRuns, data.currentRecordAccounting));
       parts.push(buildCurrentRecordLatestRunSection(latestRecordRun));
       parts.push(buildCurrentRecordScannerSection(latestRecordRun, data.latestCandidates));
       parts.push(buildCurrentRecordRejectionSection(latestRecordRun));

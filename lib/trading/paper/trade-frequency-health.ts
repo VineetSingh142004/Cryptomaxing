@@ -12,6 +12,8 @@ export interface TradeFrequencyHealthInput {
 }
 
 export interface TradeFrequencyHealth {
+  candidatesScanned: number;
+  tradesOpened: number;
   candidatesPerOpenedTrade: number | null;
   rejectionRatePct: number | null;
   noTradeRatePct: number | null;
@@ -57,6 +59,8 @@ export function evaluateTradeFrequencyHealth(
   }
 
   return {
+    candidatesScanned: input.candidatesScanned,
+    tradesOpened: input.tradesOpened,
     candidatesPerOpenedTrade: cpo,
     rejectionRatePct: rejectionRate,
     noTradeRatePct: noTradeRate,

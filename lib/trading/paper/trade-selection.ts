@@ -33,9 +33,49 @@ export function minScoreForTier(tier: RiskTier): number {
   }
 }
 
-export function formatScoreTooLowMessage(score: number, tier: RiskTier): string {
-  const required = minScoreForTier(tier);
-  return `Score ${score.toFixed(0)} below required ${required} for ${tier}.`;
+export function formatScoreTooLowMessage(
+  score: number,
+  tier: RiskTier,
+  requiredScore: number = minScoreForTier(tier),
+): string {
+  if (score >= requiredScore) {
+    return `Score ${score.toFixed(0)} passed required ${requiredScore} for ${tier} — blocked by another filter.`;
+  }
+  return `Score ${score.toFixed(0)} below required ${requiredScore} for ${tier}.`;
+}
+
+/** Never show "below required" when score already meets the effective threshold. */
+export function resolveCandidateBlockReason(input: {
+  score: number;
+  tier: RiskTier;
+  reasonCode: string;
+  reasonText: string;
+  recordCaution?: { active: boolean; minScoreBoost: number };
+}): string {
+  const baseMin = minScoreForTier(input.tier);
+  const effectiveMin =
+    baseMin + (input.recordCaution?.active ? input.recordCaution.minScoreBoost : 0);
+  const code = input.reasonCode.toUpperCase();
+
+  if (code === "SCORE_TOO_LOW" && input.score >= baseMin) {
+    if (input.recordCaution?.active && input.score < effectiveMin) {
+      return `Score ${input.score.toFixed(0)} passed base ${baseMin} but below caution effective ${effectiveMin} for ${input.tier}.`;
+    }
+    if (input.reasonText && !input.reasonText.includes("below required")) {
+      return input.reasonText;
+    }
+    return `Score ${input.score.toFixed(0)} passed ${baseMin} for ${input.tier} — blocked by confidence or another rule (not score threshold).`;
+  }
+
+  if (code === "SCORE_TOO_LOW" && input.score < effectiveMin) {
+    return formatScoreTooLowMessage(input.score, input.tier, effectiveMin);
+  }
+
+  if (code === "NO_BLUEPRINT_STRATEGY_MATCH" || code.includes("BLUEPRINT")) {
+    return input.reasonText || "Score passed — no blueprint strategy match (WATCH_ONLY in paper mode).";
+  }
+
+  return input.reasonText;
 }
 
 export function evaluateTradeSelection(input: {
@@ -155,7 +195,7 @@ export function evaluateTradeSelection(input: {
       shouldOpen: false,
       recommendation: "WATCH",
       reasonCode: "SCORE_TOO_LOW",
-      reasonText: formatScoreTooLowMessage(input.breakdown.finalScore, input.riskTier),
+      reasonText: formatScoreTooLowMessage(input.breakdown.finalScore, input.riskTier, minScore),
       decisionReasoning: [...reasoning, `Score ${input.breakdown.finalScore.toFixed(0)} < ${minScore}`],
     };
   }
