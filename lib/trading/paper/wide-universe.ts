@@ -378,7 +378,7 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
     passedBasicFilters,
     deepEvaluated: 0,
     deepEvaluationLimit: SCANNER_CONFIG.maxEvaluatedCoins,
-    deepEvaluationLimitReason: `Deep evaluation capped at ${SCANNER_CONFIG.maxEvaluatedCoins} highest-quality tradable coins (SCANNER_MAX_EVALUATED_COINS) after scanning all ${merged.length} discovered coins`,
+    deepEvaluationLimitReason: `All ${merged.length} discovered coins scanned and ranked; top ${Math.min(tradablePaperCandidates.length + watchlistOnlyCandidates.length, SCANNER_CONFIG.maxEvaluatedCoins)} sent to deep evaluation (Kraken snapshot + scoring). Limit from SCANNER_MAX_EVALUATED_COINS=${SCANNER_CONFIG.maxEvaluatedCoins}. Remaining coins stay on watchlist/quick-score only — not randomly skipped.`,
     finalCandidates: 0,
     finalPaperTradeCandidates: tradablePaperCandidates.length,
     watchOnlyCandidates: watchlistOnlyCandidates.length,

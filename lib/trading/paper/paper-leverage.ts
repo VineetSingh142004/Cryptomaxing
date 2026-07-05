@@ -106,8 +106,10 @@ export function evaluatePaperLeverage(input: PaperLeverageInput): PaperLeverageR
   let leverageReason = "Spot only — leverage not confirmed or not safe (SIMULATED)";
 
   if (unknownBlocks) {
-    leverageReason =
-      "Leverage availability UNKNOWN — no leverage recommendation (SIMULATED)";
+    const usUnknown = usLeverageAvailable === "UNKNOWN";
+    leverageReason = usUnknown
+      ? "LEVERAGE_ELIGIBLE_UNVERIFIED — U.S. leverage availability unknown; spot only (SIMULATED)"
+      : "Leverage availability UNKNOWN — no leverage recommendation (SIMULATED)";
   } else if (canRecommend) {
     if (gates.length >= 6 && opportunityScore >= 85 && confidence >= 0.85) {
       recommendedLeverage = Math.min(3, maxAllowed);

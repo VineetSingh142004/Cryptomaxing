@@ -9,6 +9,10 @@ import { buildFinalCandidateOutput } from "@/lib/trading/paper/candidate-output"
 import { emptyScoreBreakdown } from "@/lib/trading/paper/scoring";
 import { computeCoinsFilteredOut, EMPTY_PIPELINE } from "@/lib/trading/paper/scan-pipeline";
 import { evaluateTradeSelection } from "@/lib/trading/paper/trade-selection";
+import {
+  CARRIED_FROM_PREVIOUS_RECORD,
+  computeRecordPerformanceBreakdown,
+} from "@/lib/trading/paper/paper-record";
 import { verifyPaperSafetyGates } from "@/lib/trading/paper/safety-verification";
 import { evaluateAutoUnlock, defaultAutoUnlockInput } from "@/lib/trading/auto";
 import type { ExchangeAvailabilityResult } from "@/lib/trading/exchange/availability-types";
@@ -178,9 +182,124 @@ describe("trade selection quality rules", () => {
       change24hPct: 1,
       momentumPct: 0.01,
       hasExitPlan: true,
+      entryPrice: 100,
     });
     expect(result.shouldOpen).toBe(false);
     expect(result.recommendation).toBe("WATCH");
+  });
+});
+
+describe("dashboard current record view", () => {
+  it("defaults dashboard view to current record", async () => {
+    const { DEFAULT_DASHBOARD_VIEW } = await import("@/lib/trading/paper/evidence-service");
+    expect(DEFAULT_DASHBOARD_VIEW).toBe("current_record");
+  });
+
+  it("builds record activity feed and bot health from runs", async () => {
+    const {
+      buildRecordActivityFeed,
+      buildRecordBotHealthCheck,
+    } = await import("@/lib/trading/paper/paper-record");
+    const runs = [
+      {
+        startedAt: new Date("2026-07-04T20:00:00Z"),
+        status: "COMPLETED",
+        reasonCode: "NO_TRADE_BEST_DECISION",
+        tradesOpened: 0,
+        tradesUpdated: 3,
+        tradesClosed: 0,
+        scanSummary: { rejectionSummary: { SCORE_TOO_LOW: 12 } },
+      },
+    ];
+    const feed = buildRecordActivityFeed(runs, 10);
+    expect(feed.length).toBeGreaterThan(0);
+    const health = buildRecordBotHealthCheck({
+      latestRun: {
+        startedAt: runs[0]!.startedAt,
+        status: "COMPLETED",
+        reasonCode: "NO_TRADE_BEST_DECISION",
+        tradesUpdated: 3,
+        candidatesStored: 120,
+        coinsDiscovered: 259,
+      },
+      activityCounts: {
+        runsCompletedInRecord: 1,
+        tradesUpdatedInRecord: 3,
+        candidatesScannedInRecord: 120,
+        rejectionsInRecord: 12,
+        newTradesOpenedInRecord: 0,
+        carriedTradesMonitored: 3,
+      },
+    });
+    expect(health.isWorking).toBe(true);
+    expect(health.plainEnglishSummary).toContain("Bot is working");
+    expect(health.plainEnglishSummary).toContain("259 coins");
+  });
+
+  it("fresh record shows zero record P&L", () => {
+    const carried = mockTrade({
+      id: "c1",
+      status: "OPEN",
+      result: "OPEN",
+      reason: `x | ${CARRIED_FROM_PREVIOUS_RECORD}`,
+      entryPrice: { toNumber: () => 100 } as never,
+      simulatedSize: { toNumber: () => 1 } as never,
+      carriedBaselineUnrealizedPnl: { toNumber: () => 5 } as never,
+    });
+    const breakdown = computeRecordPerformanceBreakdown({
+      record: {
+        id: "rec-3",
+        startingPaperBalance: { toNumber: () => 9871.862 } as never,
+      } as import("@prisma/client").PaperRecord,
+      recordTrades: [carried],
+      markMap: new Map([["c1", 105]]),
+    });
+    expect(breakdown.recordPnl).toBe(0);
+    expect(breakdown.newTradesOpened).toBe(0);
+    expect(breakdown.carriedOpenTrades).toBe(1);
+  });
+
+  it("keeps live trading and Auto locked on dashboard safety checks", () => {
+    const safety = verifyPaperSafetyGates();
+    expect(safety.liveTradingLocked).toBe(true);
+    expect(safety.autoExecutionLocked).toBe(true);
+    expect(evaluateAutoUnlock(defaultAutoUnlockInput()).autoExecutionEnabled).toBe(false);
+  });
+
+  it("aggregates rejection categories for dashboard scanner display", async () => {
+    const { summarizeRejectionCategories } = await import("@/lib/trading/paper/paper-labels");
+    const categories = summarizeRejectionCategories({
+      SCORE_TOO_LOW: 24,
+      VOLUME_TOO_LOW: 68,
+      NOT_TRADABLE_ON_EXCHANGE: 20,
+      REJECTED_BAD_RISK_REWARD: 4,
+      WATCH_ONLY_FAKE_PUMP_RISK: 2,
+    });
+    expect(categories.BAD_RISK_REWARD).toBe(4);
+    expect(categories.FAKE_PUMP).toBe(2);
+    expect(categories.SCORE_TOO_LOW).toBe(24);
+  });
+
+  it("new record carry baseline enables carry delta", () => {
+    const carried = mockTrade({
+      id: "c2",
+      status: "OPEN",
+      result: "OPEN",
+      reason: `x | ${CARRIED_FROM_PREVIOUS_RECORD}`,
+      carriedAt: new Date("2026-07-04T10:00:00Z"),
+      carriedBaselineUnrealizedPnl: { toNumber: () => 5 } as never,
+      entryPrice: { toNumber: () => 100 } as never,
+      simulatedSize: { toNumber: () => 1 } as never,
+    });
+    const breakdown = computeRecordPerformanceBreakdown({
+      record: {
+        id: "rec-4",
+        startingPaperBalance: { toNumber: () => 9871.862 } as never,
+      } as import("@prisma/client").PaperRecord,
+      recordTrades: [carried],
+      markMap: new Map([["c2", 108]]),
+    });
+    expect(breakdown.carriedPnlSinceCarry).toBeCloseTo(3, 4);
   });
 });
 

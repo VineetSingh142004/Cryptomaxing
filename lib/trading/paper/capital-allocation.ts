@@ -39,6 +39,8 @@ export interface PositionSizeInput {
   totalExposureUsedUsd?: number;
   simulatedAccountUsd?: number;
   riskMode?: PaperRiskMode;
+  /** Record caution mode multiplier (0–1). */
+  allocationMultiplier?: number;
 }
 
 export interface PositionSizeResult {
@@ -128,7 +130,8 @@ export function calculatePaperPositionSize(input: PositionSizeInput): PositionSi
   const downMult =
     (input.downsideRiskScore ?? 30) > 60 ? 0.5 : (input.downsideRiskScore ?? 30) > 40 ? 0.75 : 1;
 
-  riskPct *= confMult * scoreMult * liqMult * volMult * levMult * downMult;
+  const recordMult = input.allocationMultiplier ?? 1;
+  riskPct *= confMult * scoreMult * liqMult * volMult * levMult * downMult * recordMult;
   riskPct = Math.min(riskPct, PAPER_RISK_CONFIG.maxCapitalPerTradePercent);
 
   const dailyBudget = resolveDailyBudget({ simulatedAccountUsd: account });

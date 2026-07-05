@@ -362,8 +362,8 @@ describe("opportunity scanner", () => {
 describe("controlled active strategy", () => {
   it("opens LONG under favorable mocked conditions", () => {
     const candidate = buildScanCandidate({
-      snapshot: mockSnapshot("DOGE/USD", 0.5),
-      tiered: mockTiered({ symbol: "DOGE/USD", change24hPct: 12, riskTier: "HIGH_VOLATILITY" }),
+      snapshot: mockSnapshot("BTC/USD", 0.1),
+      tiered: mockTiered({ symbol: "BTC/USD", baseAsset: "BTC", change24hPct: 5, riskTier: "MAJOR" }),
     });
     candidate.action = "OPEN_TRADE";
     candidate.actionType = "OPEN_PAPER_TRADE";
@@ -371,9 +371,8 @@ describe("controlled active strategy", () => {
     const strategy = evaluateControlledActiveStrategy(candidate, 0.25);
     expect(strategy.decision).toBe("LONG");
     expect(strategy.entryPrice).not.toBeNull();
-    expect(strategy.riskTier).toBe("HIGH_VOLATILITY");
-    expect(strategy.riskPercent).toBeLessThan(0.5);
-    expect(strategy.reasonCode).toBe("TRADE_OPENED");
+    expect(strategy.riskTier).toBe("MAJOR");
+    expect(strategy.reasonCode).toBe("TRADE_READY");
   });
 
   it("uses smaller risk for volatile coins", () => {

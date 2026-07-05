@@ -10,6 +10,7 @@ export interface PaperTradeHistoryRow {
   quoteAsset: string;
   exchange: string;
   marketType: string;
+  allocationPct: number | null;
   leverageUsed: number;
   entryTime: string | null;
   exitTime: string | null;
@@ -65,6 +66,12 @@ function parseLeverageFromReason(reason: string): number {
   return 1;
 }
 
+function parseAllocationPct(reason: string, riskPercent: number | null): number | null {
+  const match = reason.match(/alloc:\s*([\d.]+)%/i);
+  if (match) return parseFloat(match[1]);
+  return riskPercent;
+}
+
 function parseExitReason(reason: string): string | null {
   const closed = reason.match(/\|\s*closed:\s*([^|]+)/i);
   if (closed) return closed[1].trim();
@@ -110,6 +117,8 @@ export function buildTradeHistoryRow(trade: DbPaperTrade, tradeNumber: number): 
   const net = toNumber(trade.netPaperPnl);
   const riskAmount = toNumber(trade.riskAmount);
   const leverage = parseLeverageFromReason(trade.reason);
+  const riskPercent = toNumber(trade.riskPercent);
+  const allocationPct = parseAllocationPct(trade.reason, riskPercent);
   const capitalUsed =
     entry !== null && size !== null ? entry * size : riskAmount;
 
@@ -138,6 +147,7 @@ export function buildTradeHistoryRow(trade: DbPaperTrade, tradeNumber: number): 
     quoteAsset: trade.quoteAsset,
     exchange: trade.dataSource ?? "kraken",
     marketType: parseMarketType(trade.reason),
+    allocationPct,
     leverageUsed: leverage,
     entryTime: trade.openedAt?.toISOString() ?? null,
     exitTime: trade.closedAt?.toISOString() ?? null,

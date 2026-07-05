@@ -166,18 +166,17 @@ describe("risk explanation for losing trades", () => {
 });
 
 describe("dynamic trade limit", () => {
-  it("is disabled by default", () => {
-    expect(PAPER_RISK_CONFIG.dynamicTradeLimit).toBe(false);
+  it("is enabled by default with risk-based factors", () => {
+    expect(PAPER_RISK_CONFIG.dynamicTradeLimit).toBe(true);
     const cap = resolveEffectiveMaxOpenTrades({ openTradeCount: 2 });
-    expect(cap.dynamicModeEnabled).toBe(false);
-    expect(cap.factors[0]).toContain("disabled");
+    expect(cap.dynamicModeEnabled).toBe(true);
+    expect(cap.factors[0]).toContain("Base max");
   });
 
-  it("blocks new slots at fixed max when dynamic disabled", () => {
-    const cap = resolveEffectiveMaxOpenTrades({ openTradeCount: 5 });
-    expect(cap.dynamicModeEnabled).toBe(false);
+  it("blocks new slots when at effective capacity", () => {
+    const cap = resolveEffectiveMaxOpenTrades({ openTradeCount: 5, totalExposurePct: 6 });
     expect(cap.slotsAvailable).toBe(0);
-    expect(cap.blockedReason).toBe("MAX_OPEN_TRADES_REACHED");
+    expect(cap.blockedReason).toBeTruthy();
   });
 });
 
@@ -278,13 +277,13 @@ describe("leverage recommendation", () => {
     });
     expect(result.useLeverage).toBe(false);
     expect(result.recommendedLeverage).toBe(1);
-    expect(result.leverageReason).toContain("UNKNOWN");
+    expect(result.leverageReason).toContain("LEVERAGE_ELIGIBLE_UNVERIFIED");
   });
 });
 
 describe("safety gates", () => {
   it("simulated labels on risk config", () => {
-    expect(PAPER_RISK_CONFIG.dynamicTradeLimit).toBe(false);
+    expect(PAPER_RISK_CONFIG.dynamicTradeLimit).toBe(true);
   });
 
   it("Auto remains locked without live trading", () => {

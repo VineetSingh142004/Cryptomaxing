@@ -34,8 +34,8 @@ function envBudgetMode(key: string, fallback: PaperDailyBudgetMode): PaperDailyB
 }
 
 export const PAPER_RISK_CONFIG = {
-  /** When false, uses fixed PAPER_MAX_OPEN_TRADES. Default: false. */
-  dynamicTradeLimit: envBool("PAPER_DYNAMIC_TRADE_LIMIT", false),
+  /** When false, uses fixed PAPER_MAX_OPEN_TRADES only. Default: true (risk-based). */
+  dynamicTradeLimit: envBool("PAPER_DYNAMIC_TRADE_LIMIT", true),
   maxTotalExposurePercent: envFloat("PAPER_MAX_TOTAL_EXPOSURE_PERCENT", 5),
   maxDailyLossPercent: envFloat("PAPER_MAX_DAILY_LOSS_PERCENT", 2),
   maxCorrelatedTrades: envInt("PAPER_MAX_CORRELATED_TRADES", 2),
@@ -45,10 +45,10 @@ export const PAPER_RISK_CONFIG = {
   maxCapitalPerTradePercent: envFloat("PAPER_MAX_CAPITAL_PER_TRADE_PERCENT", 2),
   maxLeverageAllowed: envFloat("PAPER_MAX_LEVERAGE_ALLOWED", 3),
   riskMode: envRiskMode("PAPER_RISK_MODE", "balanced"),
-  /** Exit losing trades early when unrealized loss exceeds this (bps) and thesis weakens. */
-  earlyLossCutBps: envFloat("PAPER_EARLY_LOSS_CUT_BPS", 40),
+  /** Exit losing trades early when unrealized loss exceeds this (bps) and thesis weakens materially. */
+  earlyLossCutBps: envFloat("PAPER_EARLY_LOSS_CUT_BPS", 65),
   /** Minimum thesis-invalidation score (0–100) to trigger early exit on a loser. */
-  thesisInvalidationThreshold: envFloat("PAPER_THESIS_INVALIDATION_THRESHOLD", 55),
+  thesisInvalidationThreshold: envFloat("PAPER_THESIS_INVALIDATION_THRESHOLD", 65),
 } as const;
 
 export function riskModeMultiplier(mode: PaperRiskMode): number {

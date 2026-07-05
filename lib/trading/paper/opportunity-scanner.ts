@@ -243,6 +243,11 @@ export function buildScanCandidate(input: {
   snapshot: NormalizedMarketSnapshot;
   tickerRow?: UniverseTickerRow;
   tiered?: TieredCandidate;
+  recordCaution?: {
+    active: boolean;
+    minScoreBoost: number;
+    blockHighVolAlts: boolean;
+  };
 }): ScanCandidate {
   const { snapshot } = input;
   const tiered = input.tiered;
@@ -354,8 +359,16 @@ export function buildScanCandidate(input: {
       spreadBps,
       volume24hUsd,
       change24hPct,
+      change1hPct,
       momentumPct: mom,
       hasExitPlan,
+      entryPrice: price,
+      pumpRiskPenalty,
+      momentumScore: scoreBreakdown.trendScore,
+      volumeSpikeScore: volSpike,
+      shortTermReturnPct: ret,
+      tradableOnConfiguredExchange: tradable,
+      recordCaution: input.recordCaution,
     });
     if (selection.shouldOpen) {
       action = "OPEN_TRADE";

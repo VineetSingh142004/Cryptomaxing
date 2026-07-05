@@ -39,9 +39,13 @@ export function resolveEffectiveMaxOpenTrades(input: DynamicCapacityInput): Dyna
   factors.push(`Base max: ${fixed}`);
 
   const hq = input.highQualityOpportunityCount ?? 0;
-  if (hq >= 3 && (input.averageConfidence ?? 0) >= 0.75) {
+  if (hq >= 2 && (input.averageConfidence ?? 0) >= 0.7) {
     dynamicMax += 1;
-    factors.push("Multiple high-quality opportunities");
+    factors.push("High-quality opportunities available — extra slot");
+  }
+  if (hq >= 4 && (input.averageConfidence ?? 0) >= 0.8) {
+    dynamicMax += 1;
+    factors.push("Multiple strong setups — risk-based capacity increased");
   }
 
   if ((input.dailyLossPct ?? 0) <= -PAPER_RISK_CONFIG.maxDailyLossPercent * 0.5) {
@@ -72,7 +76,7 @@ export function resolveEffectiveMaxOpenTrades(input: DynamicCapacityInput): Dyna
   const exposureCap = Math.floor(
     PAPER_RISK_CONFIG.maxTotalExposurePercent / PAPER_RISK_CONFIG.maxCapitalPerTradePercent,
   );
-  dynamicMax = Math.min(dynamicMax, exposureCap, fixed + 2);
+  dynamicMax = Math.min(dynamicMax, Math.max(fixed, exposureCap), fixed + 3);
 
   const slotsAvailable = Math.max(0, dynamicMax - input.openTradeCount);
   let blockedReason: string | null = null;

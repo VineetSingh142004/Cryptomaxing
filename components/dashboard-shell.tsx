@@ -137,11 +137,24 @@ interface PaperEvidenceData {
   missedOpportunitiesTotal?: number;
   openTradeCapacity?: {
     maxOpenTrades: number;
+    baseMaxOpenTrades?: number;
+    dynamicMaxOpenTrades?: number;
+    fixedMaxOpenTrades?: number;
     openTrades: number;
     availableSlots: number;
     newTradeOpening: string;
     maxOpenTradesBlockReason: string | null;
     rotationEnabled: boolean;
+    totalExposurePct?: number;
+    currentExposureUsd?: number;
+    maxTotalExposurePct?: number;
+    dailyRiskBudgetUsd?: number;
+    dailyRiskBudgetPct?: number;
+    riskUsedTodayUsd?: number;
+    riskUsedTodayPct?: number;
+    capacityLimitedBy?: string | null;
+    newTradeAllowedReason?: string;
+    capacityFactors?: string[];
     openTradeDetails?: Array<{
       symbol: string;
       side: string;
@@ -207,7 +220,146 @@ interface PaperEvidenceData {
   wins: number;
   losses: number;
   breakevens: number;
+  riskLevel?: "LOW" | "MEDIUM" | "HIGH" | "CAUTION_MODE" | "RISK_MODE_ACTIVE";
+  recordCautionMode?: {
+    active: boolean;
+    mode: string;
+    dashboardLabel: string;
+    dashboardMessage: string;
+    allocationMultiplier: number;
+    reasons: string[];
+    simulatedLabel: "SIMULATED_PAPER_ONLY";
+  };
+  recordLossAudits?: Array<Record<string, unknown>>;
+  riskConfig?: Record<string, unknown>;
+  dataTruth?: {
+    marketData: { label: string; detail: string };
+    paperTrades: { label: string; detail: string };
+    pnl: { label: string; detail: string };
+  };
+  activeTradingRules?: {
+    groups: Array<{ title: string; rules: string[]; simulatedOnly: boolean }>;
+    safetyCaps: string[];
+    liveTradingLocked: true;
+    autoExecutionLocked: true;
+  };
+  lossAnalysis?: {
+    losses: Array<{
+      tradeId?: string;
+      symbol: string;
+      entryPrice?: number | null;
+      exitPrice?: number | null;
+      entryReason: string;
+      exitReason: string | null;
+      scoreAtEntry: number | null;
+      allocationPct: number | null;
+      stopLossDistancePct: number | null;
+      takeProfitDistancePct: number | null;
+      spreadAtEntry: string;
+      volumeLiquidity: string;
+      lossAmount?: number | null;
+      lossPct?: number | null;
+      averageLossTooLarge?: boolean | null;
+      exitTooLate?: boolean | null;
+      stopLossHit?: boolean | null;
+      momentumReversed: boolean | null;
+      volumeWeakened?: boolean | null;
+      spreadWidened?: boolean | null;
+      fakePumpRisk: boolean | null;
+      suggestedFix?: string;
+      suggestedRuleImprovement?: string;
+      netPnl: number | null;
+    }>;
+    analyzedCount: number;
+    note: string;
+  };
   warning: string;
+  evidenceCollectionMessage?: string;
+  hasPaperRuns?: boolean;
+  performanceSummary?: {
+    startingPaperBalance: number;
+    currentPaperBalance: number;
+    totalNetPnl: number;
+    totalGrossProfit: number;
+    totalGrossLoss: number;
+    totalRealizedPnl: number;
+    totalUnrealizedPnl: number;
+    totalClosedTrades: number;
+    totalOpenTrades: number;
+    wins: number;
+    losses: number;
+    breakevens: number;
+    winRate: number | null;
+    averageWinningTrade: number | null;
+    averageLosingTrade: number | null;
+    profitFactor: number | null;
+    expectancyPerTrade: number | null;
+    largestWin: number | null;
+    largestLoss: number | null;
+    bestCoin: string | null;
+    worstCoin: string | null;
+    mostTradedCoin: string | null;
+    averageTradeDurationHours: number | null;
+    stopLossHitCount: number;
+    takeProfitHitCount: number;
+    expiryExitCount: number;
+    thesisInvalidationExitCount: number;
+    currentExposurePct: number | null;
+    capitalExposurePct?: number | null;
+    riskAtStopPct?: number | null;
+    maxExposureUsedPct: number | null;
+    largestSingleTradeExposurePct: number | null;
+    exposureExplanation: string | null;
+    maxDrawdownSimulated: number | null;
+    simpleVerdict: string;
+    improvementItems: string[];
+    simulatedLabel: string;
+  };
+  profitQuality?: {
+    startingPaperBalance: number;
+    currentPaperBalance: number;
+    totalRealizedPnl: number;
+    totalUnrealizedPnl: number;
+    portfolioPnl: number;
+    totalGrossProfit: number;
+    totalGrossLoss: number;
+    wins: number;
+    losses: number;
+    winRate: number | null;
+    averageWin: number | null;
+    averageLoss: number | null;
+    avgLossToWinRatio: number | null;
+    profitFactor: number | null;
+    expectancy: number | null;
+    largestWin: number | null;
+    largestLoss: number | null;
+    maxDrawdown: number | null;
+    currentExposurePct: number | null;
+    capitalExposurePct?: number | null;
+    riskAtStopPct?: number | null;
+    riskMode: {
+      active: boolean;
+      reasons: string[];
+      dashboardLabel: string;
+      dashboardMessage: string;
+      performanceScope?: "all_time" | "strategy_version" | "baseline";
+      performanceScopeLabel?: string;
+    };
+    profitQualityVerdict: string;
+    healthStatus: string;
+    simulatedLabel: string;
+  };
+  historyDiagnostic?: {
+    totalClosedLosses: number;
+    wouldBlockAtEntry: Array<{ symbol: string; netPnl: number }>;
+    wouldReduceSize: Array<{ symbol: string; netPnl: number }>;
+    wouldExitEarlier: Array<{ symbol: string; netPnl: number }>;
+    estimatedLossReductionUsd: number;
+    winnersStillPassing: number;
+    winnersBlocked: number;
+    overFilterWarning: string | null;
+    simulatedLabel: string;
+  };
   liveTradingLocked?: true;
   autoExecutionLocked?: boolean;
   nextSafeAction?: string;
@@ -217,6 +369,7 @@ interface PaperEvidenceData {
       coin: string;
       exchange: string;
       marketType: string;
+      allocationPct?: number | null;
       leverageUsed: number;
       entryTime: string | null;
       exitTime: string | null;
@@ -247,6 +400,109 @@ interface PaperEvidenceData {
     autoExecutionLocked: boolean;
     checks: Array<{ id: string; passed: boolean; note: string }>;
     simulatedLabel: string;
+  };
+  currentStrategyVersion?: string;
+  activeRecord?: {
+    recordId: string;
+    recordNumber: number;
+    recordName: string;
+    strategyVersion: string;
+    startedAt: string;
+  };
+  currentRecord?: Record<string, number | string | null | undefined>;
+  recordHistory?: Array<{
+    recordId: string;
+    recordNumber: number;
+    recordName: string;
+    strategyVersion: string;
+    startedAt: string;
+    endedAt: string | null;
+    status: string;
+    recordPnl: number | null;
+    closedTrades: number;
+    winRate: number | null;
+    profitFactor: number | null;
+  }>;
+  archivedRecords?: Array<Record<string, unknown>>;
+  recordComparison?: { plainEnglishVerdict: string };
+  carriedOpenTradesCount?: number;
+  carriedOpenTradesDetail?: Array<{
+    tradeId: string;
+    symbol: string;
+    side: string;
+    originalEntryTime: string;
+    carriedIntoRecordTime: string;
+    entryPrice: number;
+    currentPrice: number;
+    unrealizedSinceCarry: number;
+    allTimeUnrealizedPnl: number;
+    status: string;
+    legacyBaselineMissing?: boolean;
+    pnlSinceCarryDisplay?: string;
+  }>;
+  allTimeDebug?: {
+    paperRuns: number;
+    simulatedNetPnl: number;
+    closedPaperTrades: number;
+    openPaperTrades: number;
+    wins: number;
+    losses: number;
+    lastRunAt: string | null;
+  };
+  defaultDashboardView?: "current_record" | "all_time";
+  dashboardDataSource?: {
+    label: string;
+    recordId: string;
+    recordNumber: number;
+    recordName: string;
+    startedAt: string;
+    scopeNote: string;
+    simulatedLabel: string;
+  };
+  recordWarnings?: string[];
+  botHealthCheck?: {
+    isWorking: boolean;
+    latestRunCompleted: boolean;
+    latestRunTime: string | null;
+    latestRunUpdatedTrades: boolean;
+    candidatesScanned: number;
+    currentRecordRuns: number;
+    carriedTradesMonitored: number;
+    tradesUpdatedInRecord?: number;
+    rejectionsInRecord?: number;
+    currentReason: string | null;
+    plainEnglishSummary: string;
+  };
+  recordActivityCounts?: {
+    runsCompletedInRecord: number;
+    tradesUpdatedInRecord: number;
+    candidatesScannedInRecord: number;
+    rejectionsInRecord: number;
+    newTradesOpenedInRecord?: number;
+    carriedTradesMonitored?: number;
+  };
+  latestRecordRun?: {
+    runId: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    status: string | null;
+    reasonCode: string | null;
+    reasonText: string | null;
+    candidatesStored: number;
+    signalsStored: number;
+    snapshotsStored: number;
+    tradesOpened: number;
+    tradesUpdated: number;
+    tradesClosed: number;
+    rejectionSummary: Record<string, number>;
+    rejectionCategories?: Record<string, number>;
+    bestDecision: string | null;
+    emptyMessage: string | null;
+    pnlSource?: string;
+    pnlUnavailableMessage?: string | null;
+  };
+  recordScanner?: PaperEvidenceData["scanner"] & {
+    rejectionCategories?: Record<string, number>;
   };
   scanner?: {
     scannerMode?: string;
@@ -354,6 +610,7 @@ interface PaperEvidenceData {
       action: string;
       reason: string;
       reasonCode: string;
+      runDisplayLabel?: string;
     }>;
     whyNoTrade?: {
       topReasons: Array<{ reason: string; count: number }>;
@@ -411,6 +668,8 @@ interface PaperRunResult {
     action: string;
     reasonCode: string;
     reasonText: string;
+    recommendationLabel?: string;
+    runDisplayLabel?: string;
   }>;
   highVolatilityOpportunities?: Array<{
     symbol: string;
@@ -446,7 +705,23 @@ interface PaperRunResult {
   noTradeSignals: number;
   simulatedNetPnl: number;
   portfolioSimulatedNetPnl?: number;
+  portfolioPnlBeforeRun?: number;
+  portfolioPnlAfterRun?: number;
+  realizedPnlThisRun?: number;
+  unrealizedPnlChangeThisRun?: number;
   currentRunPnlDelta?: number;
+  deepEvaluationLimit?: number;
+  skippedFromDeepEvaluation?: number;
+  deepEvaluationExplanation?: string;
+  deepEvaluationCapFromEnv?: boolean;
+  passedBasicFilters?: number;
+  dynamicCapacity?: {
+    baseMaxOpenTrades: number;
+    dynamicMaxOpenTrades: number;
+    currentOpenTrades: number;
+    availableSlots: number;
+    factors: string[];
+  };
   warnings: string[];
   autoUnlocked: boolean;
   liveOrdersPlaced: boolean;
@@ -471,6 +746,102 @@ export function DashboardShell() {
   const [paperRunWarnings, setPaperRunWarnings] = useState<string[]>([]);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [paperRunError, setPaperRunError] = useState<string | null>(null);
+  const [exportLogLoading, setExportLogLoading] = useState(false);
+  const [exportStatus, setExportStatus] = useState<
+    "EXPORT_READY" | "EXPORT_RUNNING" | "EXPORT_FAILED" | "EXPORT_DOWNLOADED"
+  >("EXPORT_READY");
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [recordLoading, setRecordLoading] = useState(false);
+  const [recordMessage, setRecordMessage] = useState<string | null>(null);
+  const [recordNameInput, setRecordNameInput] = useState("");
+  const [recordStartMode, setRecordStartMode] = useState<"soft" | "clean">("soft");
+  const [showStartRecordDialog, setShowStartRecordDialog] = useState(false);
+  const [pendingOpenTradeCount, setPendingOpenTradeCount] = useState(0);
+  const [dashboardView, setDashboardView] = useState<"current_record" | "all_time">("current_record");
+
+  const isCurrentRecordView = dashboardView === "current_record";
+  const isAllTimeView = dashboardView === "all_time";
+
+  function fmtMetric(value: number | null | undefined, digits = 4): string {
+    if (value === null || value === undefined || !Number.isFinite(value)) return "UNKNOWN";
+    return value.toFixed(digits);
+  }
+
+  async function exportPaperLogMode(mode: string, recordId?: string) {
+    setExportLogLoading(true);
+    setExportStatus("EXPORT_RUNNING");
+    setExportMessage(null);
+    try {
+      const params = new URLSearchParams({ mode });
+      if (recordId) params.set("recordId", recordId);
+      const res = await fetch(`/api/paper/export-log?${params.toString()}`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match?.[1] ?? "alpha-autopilot-paper-log.txt";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportStatus("EXPORT_DOWNLOADED");
+      setExportMessage("Paper log downloaded successfully.");
+    } catch {
+      setExportStatus("EXPORT_FAILED");
+      setExportMessage("Export failed. Paper run is still healthy.");
+    } finally {
+      setExportLogLoading(false);
+    }
+  }
+
+  async function startPaperRecord(carryOpenTrades = false) {
+    setRecordLoading(true);
+    setRecordMessage(null);
+    try {
+      const res = await fetch("/api/paper/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recordName: recordNameInput.trim() || undefined,
+          carryOpenTrades,
+          startMode: recordStartMode,
+        }),
+      });
+      const body = await res.json().catch(() => null);
+      if (res.status === 409 && body?.reason === "OPEN_TRADES_EXIST") {
+        if (body.startMode === "clean") {
+          setRecordMessage(
+            body.message ??
+              "Clean Fresh Start requires no open paper trades. Choose Soft Fresh Start to carry them separately, or wait until they close.",
+          );
+          return;
+        }
+        setPendingOpenTradeCount(body.openTradeCount ?? 0);
+        setShowStartRecordDialog(true);
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(body?.error?.message ?? body?.error ?? body?.message ?? "Start new record failed");
+      }
+      setRecordMessage(
+        body.message ??
+          "New record started. Dashboard now shows this record only. Carried trades are monitored separately.",
+      );
+      setShowStartRecordDialog(false);
+      setRecordNameInput("");
+      await fetchDashboard();
+    } catch (err) {
+      setRecordMessage(err instanceof Error ? err.message : "Start new record failed");
+    } finally {
+      setRecordLoading(false);
+    }
+  }
+
+  async function exportPaperLog() {
+    await exportPaperLogMode("FULL_TRADE_LOG_EXPORT");
+  }
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -687,17 +1058,1037 @@ export function DashboardShell() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
-            {data?.paper_evidence ? (
+            {data?.paper_evidence || (paperRunResult?.paperRunsAfter ?? 0) > 0 ? (
               <>
-                <StatusRow label="Paper Mode" status={data.paper_evidence.paperModeReady ? "READY" : "NO"} />
-                <StatusRow
-                  label="Market Data"
-                  status={data.paper_evidence.marketDataReady ? "READY" : "NOT_CONFIGURED"}
-                />
-                <p>Last Paper Run: {data.paper_evidence.lastRunAt ?? "—"}</p>
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs space-y-1">
+                  <p>{data?.paper_evidence?.warning ?? "Paper P&L is simulated — not live proof"}</p>
+                  <p>
+                    {data?.paper_evidence?.evidenceCollectionMessage ??
+                      ((paperRunResult?.paperRunsAfter ?? 0) > 0
+                        ? "Paper evidence collecting."
+                        : "No paper evidence runs yet.")}
+                  </p>
+                  <p>Live trading: LOCKED · Auto: LOCKED · All P&L is SIMULATED</p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border p-2">
+                  <span className="text-xs font-medium">Dashboard View:</span>
+                  <Button
+                    size="sm"
+                    variant={isCurrentRecordView ? "default" : "outline"}
+                    onClick={() => setDashboardView("current_record")}
+                  >
+                    Current Record
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={isAllTimeView ? "default" : "outline"}
+                    onClick={() => setDashboardView("all_time")}
+                  >
+                    All-Time / Debug
+                  </Button>
+                </div>
+
+                {isCurrentRecordView && data?.paper_evidence?.dashboardDataSource && (
+                  <div className="rounded-lg border border-dashed bg-muted/30 p-3 text-xs space-y-1">
+                    <p className="font-medium">
+                      Dashboard data source: {data.paper_evidence.dashboardDataSource.label}
+                    </p>
+                    <p className="text-muted-foreground">
+                      Active record ID: {data.paper_evidence.dashboardDataSource.recordId}
+                    </p>
+                    <p className="text-muted-foreground">
+                      Record started:{" "}
+                      {new Date(data.paper_evidence.dashboardDataSource.startedAt).toLocaleString()}
+                    </p>
+                    <p className="text-muted-foreground">{data.paper_evidence.dashboardDataSource.scopeNote}</p>
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.botHealthCheck?.isWorking &&
+                  (data.paper_evidence.recordActivityCounts?.newTradesOpenedInRecord ?? 0) === 0 && (
+                  <p className="text-xs text-emerald-700 dark:text-emerald-400 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+                    Bot is working. It is scanning and rejecting weak setups. No new trade was opened because no setup passed the filters.
+                  </p>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.performanceSummary && (
+                  <div className="rounded-lg border-2 border-primary/40 bg-primary/5 p-4 space-y-3">
+                    <p className="text-sm font-semibold">CURRENT RECORD — SIMULATED</p>
+                    <p className="text-xs text-muted-foreground">
+                      Record #{data.paper_evidence.activeRecord?.recordNumber ?? "—"} ·{" "}
+                      {data.paper_evidence.activeRecord?.recordName ?? "Current Paper Record"} ·{" "}
+                      {data.paper_evidence.activeRecord?.strategyVersion ?? "—"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Started:{" "}
+                      {data.paper_evidence.activeRecord?.startedAt
+                        ? new Date(data.paper_evidence.activeRecord.startedAt).toLocaleString()
+                        : "—"}
+                    </p>
+                    {(data.paper_evidence.performanceSummary as { freshRecordMessage?: string | null })
+                      .freshRecordMessage && (
+                      <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                        {
+                          (data.paper_evidence.performanceSummary as { freshRecordMessage?: string | null })
+                            .freshRecordMessage
+                        }
+                      </p>
+                    )}
+                    <p className="text-sm italic text-muted-foreground">
+                      {data.paper_evidence.performanceSummary.simpleVerdict}
+                    </p>
+                    <div className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
+                      <p>
+                        <span className="text-muted-foreground">Starting balance:</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.startingPaperBalance)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Current balance:</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.currentPaperBalance)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">P&L since record start:</span>{" "}
+                        {data.paper_evidence.performanceSummary.totalNetPnl >= 0 ? "+" : ""}
+                        {fmtMetric(data.paper_evidence.performanceSummary.totalNetPnl)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Realized P&L (new trades in record):</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.totalRealizedPnl)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Unrealized P&L (new trades in record):</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.totalUnrealizedPnl)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Carried trade P&L since carry:</span>{" "}
+                        {fmtMetric(
+                          (data.paper_evidence.performanceSummary as { carriedPnlSinceCarry?: number })
+                            .carriedPnlSinceCarry ?? 0,
+                        )}{" "}
+                        SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">New trades opened in this record:</span>{" "}
+                        {(data.paper_evidence.performanceSummary as { newTradesOpened?: number }).newTradesOpened ?? 0}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Carried open trades:</span>{" "}
+                        {data.paper_evidence.carriedOpenTradesCount ?? 0}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Closed trades in this record:</span>{" "}
+                        {(data.paper_evidence.performanceSummary as { closedTradesInRecord?: number })
+                          .closedTradesInRecord ?? 0}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Wins in this record:</span>{" "}
+                        {data.paper_evidence.performanceSummary.wins}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Losses in this record:</span>{" "}
+                        {data.paper_evidence.performanceSummary.losses}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Win rate in this record:</span>{" "}
+                        {data.paper_evidence.performanceSummary.winRate !== null
+                          ? `${(data.paper_evidence.performanceSummary.winRate * 100).toFixed(1)}%`
+                          : "Not enough data"}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Average win in this record:</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.averageWinningTrade)}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Average loss in this record:</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.averageLosingTrade)}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Expectancy in this record:</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.expectancyPerTrade)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Max drawdown in this record:</span>{" "}
+                        {fmtMetric(data.paper_evidence.performanceSummary.maxDrawdownSimulated)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Current risk mode:</span>{" "}
+                        {data.paper_evidence.riskLevel ?? "UNKNOWN"}
+                      </p>
+                      {data.paper_evidence.recordCautionMode?.active && (
+                        <p className="text-amber-700 dark:text-amber-400">
+                          {data.paper_evidence.recordCautionMode.dashboardMessage}
+                        </p>
+                      )}
+                      <p>
+                        <span className="text-muted-foreground">Profit factor in this record:</span>{" "}
+                        {data.paper_evidence.performanceSummary.profitFactor !== null
+                          ? fmtMetric(data.paper_evidence.performanceSummary.profitFactor)
+                          : "Not enough data"}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Status / verdict:</span>{" "}
+                        {(data.paper_evidence.performanceSummary as { freshRecordMessage?: string | null })
+                          .freshRecordMessage ??
+                          data.paper_evidence.performanceSummary.simpleVerdict}
+                      </p>
+                    </div>
+                    {data.paper_evidence.recordActivityCounts && (
+                      <div className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2 border-t pt-2">
+                        <p>Runs completed in this record: {data.paper_evidence.recordActivityCounts.runsCompletedInRecord}</p>
+                        <p>Trades updated in this record: {data.paper_evidence.recordActivityCounts.tradesUpdatedInRecord}</p>
+                        <p>Candidates scanned in this record: {data.paper_evidence.recordActivityCounts.candidatesScannedInRecord}</p>
+                        <p>Rejections in this record: {data.paper_evidence.recordActivityCounts.rejectionsInRecord}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.botHealthCheck && (
+                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
+                    <p className="text-sm font-semibold">Bot Health Check (SIMULATED)</p>
+                    <p className="text-xs">{data.paper_evidence.botHealthCheck.plainEnglishSummary}</p>
+                    <div className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+                      <p>Bot working: {data.paper_evidence.botHealthCheck.isWorking ? "YES" : "NO"}</p>
+                      <p>Latest run completed: {data.paper_evidence.botHealthCheck.latestRunCompleted ? "YES" : "NO"}</p>
+                      <p>
+                        Latest run time:{" "}
+                        {data.paper_evidence.botHealthCheck.latestRunTime
+                          ? new Date(data.paper_evidence.botHealthCheck.latestRunTime).toLocaleString()
+                          : "—"}
+                      </p>
+                      <p>Latest action: {data.paper_evidence.latestRecordRun?.latestAction ?? "—"}</p>
+                      <p>Latest reason code: {data.paper_evidence.botHealthCheck.currentReason ?? "—"}</p>
+                      <p>Runs completed in this record: {data.paper_evidence.botHealthCheck.currentRecordRuns}</p>
+                      <p>Trades updated in this record: {data.paper_evidence.botHealthCheck.tradesUpdatedInRecord ?? data.paper_evidence.recordActivityCounts?.tradesUpdatedInRecord ?? 0}</p>
+                      <p>Candidates scanned in this record: {data.paper_evidence.recordActivityCounts?.candidatesScannedInRecord ?? data.paper_evidence.botHealthCheck.candidatesScanned}</p>
+                      <p>Rejections in this record: {data.paper_evidence.botHealthCheck.rejectionsInRecord ?? data.paper_evidence.recordActivityCounts?.rejectionsInRecord ?? 0}</p>
+                      <p>Carried trades monitored: {data.paper_evidence.botHealthCheck.carriedTradesMonitored}</p>
+                    </div>
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 space-y-2">
+                    <p className="text-sm font-semibold">Carried Open Trades (SIMULATED)</p>
+                    <p className="text-xs text-muted-foreground">
+                      These trades were opened before this record started. Only P&L changes after carry time count toward the current record.
+                    </p>
+                    {(data.paper_evidence.carriedOpenTradesDetail?.length ?? 0) === 0 ? (
+                      <p className="text-xs text-muted-foreground">No carried open trades in this record.</p>
+                    ) : (
+                    <div className="space-y-2 text-xs">
+                      {data.paper_evidence.carriedOpenTradesDetail!.map((t) => {
+                        const review = data.paper_evidence?.recordOpenTrades?.find((r) => r.tradeId === t.tradeId);
+                        return (
+                        <div key={t.tradeId} className="rounded border p-2">
+                          <p className="font-medium">
+                            {t.symbol} {t.side} · {t.status}
+                          </p>
+                          <p>Original entry: {new Date(t.originalEntryTime).toLocaleString()}</p>
+                          <p>Carried into record: {new Date(t.carriedIntoRecordTime).toLocaleString()}</p>
+                          <p>
+                            Entry {fmtMetric(t.entryPrice)} → Current {fmtMetric(t.currentPrice)} SIM
+                          </p>
+                          <p>
+                            P&L since carried into this record:{" "}
+                            {t.legacyBaselineMissing
+                              ? "Legacy carry baseline missing. Run db:generate + db:push, then start a new record for accurate carry delta."
+                              : `${fmtMetric(t.unrealizedSinceCarry)} SIM`}
+                          </p>
+                          <p>All-time P&L from this trade: {fmtMetric(t.allTimeUnrealizedPnl)} SIM</p>
+                          {review && (
+                            <>
+                              <p>Distance to TP / SL: {review.distanceToTpPct ?? "—"}% / {review.distanceToSlPct ?? "—"}%</p>
+                              <p>Thesis: {review.thesisStatus} · {review.recommendation} · {review.reasons.join("; ")}</p>
+                              {review.candleData && (
+                                <p>
+                                  Candles: {review.candleData.available ? "YES" : "NO"} · count{" "}
+                                  {review.candleData.candleCount} · {review.candleData.timeframe} · provider{" "}
+                                  {review.candleData.provider ?? "—"}
+                                  {review.candleData.missingReason
+                                    ? ` · ${review.candleData.missingReason}`
+                                    : ""}
+                                </p>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );})}
+                    </div>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.latestRecordRun && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Latest Current Record Run (SIMULATED)</p>
+                    {data.paper_evidence.latestRecordRun.emptyMessage ? (
+                      <p className="text-xs text-muted-foreground">
+                        {data.paper_evidence.latestRecordRun.emptyMessage}
+                      </p>
+                    ) : (
+                      <div className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+                        <p>
+                          Run time:{" "}
+                          {data.paper_evidence.latestRecordRun.startedAt
+                            ? new Date(data.paper_evidence.latestRecordRun.startedAt).toLocaleString()
+                            : "—"}
+                        </p>
+                        <p>Status: {data.paper_evidence.latestRecordRun.status ?? "—"}</p>
+                        <p>Latest action: {data.paper_evidence.latestRecordRun.latestAction ?? "—"}</p>
+                        <p>
+                          Opened / updated / closed: {data.paper_evidence.latestRecordRun.tradesOpened} /{" "}
+                          {data.paper_evidence.latestRecordRun.tradesUpdated} /{" "}
+                          {data.paper_evidence.latestRecordRun.tradesClosed}
+                        </p>
+                        <p>
+                          Candidates / signals / snapshots:{" "}
+                          {data.paper_evidence.latestRecordRun.candidatesStored} /{" "}
+                          {data.paper_evidence.latestRecordRun.signalsStored} /{" "}
+                          {data.paper_evidence.latestRecordRun.snapshotsStored}
+                        </p>
+                        <p>
+                          Discovered / evaluated:{" "}
+                          {data.paper_evidence.latestRecordRun.coinsDiscovered ?? "—"} /{" "}
+                          {data.paper_evidence.latestRecordRun.coinsEvaluated ?? "—"}
+                        </p>
+                        <p>
+                          Realized / unrealized / net this run:{" "}
+                          {fmtMetric(data.paper_evidence.latestRecordRun.realizedPnlThisRun)} /{" "}
+                          {fmtMetric(data.paper_evidence.latestRecordRun.unrealizedPnlChangeThisRun)} /{" "}
+                          {fmtMetric(data.paper_evidence.latestRecordRun.netChangeThisRun)} SIM
+                        </p>
+                        {(data.paper_evidence.latestRecordRun as { pnlSource?: string }).pnlSource ===
+                          "computed_from_snapshots" && (
+                          <p className="text-xs text-muted-foreground">P&L computed from run snapshots (not stored in scan summary).</p>
+                        )}
+                        {(data.paper_evidence.latestRecordRun as { pnlUnavailableMessage?: string | null })
+                          .pnlUnavailableMessage && (
+                          <p className="text-xs text-amber-600">
+                            {
+                              (data.paper_evidence.latestRecordRun as { pnlUnavailableMessage?: string | null })
+                                .pnlUnavailableMessage
+                            }
+                          </p>
+                        )}
+                        <p>
+                          Reason: [{data.paper_evidence.latestRecordRun.reasonCode ?? "—"}]{" "}
+                          {data.paper_evidence.latestRecordRun.reasonText ?? ""}
+                        </p>
+                        <p>Best decision: {data.paper_evidence.latestRecordRun.bestDecision ?? "—"}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.recordScanner && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Current Record Scan Summary (SIMULATED)</p>
+                    <div className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+                      <p>Discovered: {data.paper_evidence.recordScanner.coinsDiscovered ?? data.paper_evidence.recordScanner.pipeline?.coinsDiscovered ?? "—"}</p>
+                      <p>Evaluated: {data.paper_evidence.recordScanner.coinsEvaluated ?? data.paper_evidence.recordScanner.pipeline?.deepEvaluated ?? "—"}</p>
+                      <p>Ranked: {data.paper_evidence.recordScanner.pipeline?.finalCandidates ?? "—"}</p>
+                      <p>High-vol: {data.paper_evidence.recordScanner.scannerHealth?.highVolCount ?? "—"}</p>
+                      <p>Watchlist: {data.paper_evidence.recordScanner.scannerHealth?.watchlistCount ?? "—"}</p>
+                      <p>
+                        Rejected bad risk/reward:{" "}
+                        {(data.paper_evidence.latestRecordRun as { rejectionCategories?: Record<string, number> })
+                          .rejectionCategories?.BAD_RISK_REWARD ??
+                          (data.paper_evidence.recordScanner as { rejectionCategories?: Record<string, number> | undefined })
+                            ?.rejectionCategories?.BAD_RISK_REWARD ??
+                          0}
+                      </p>
+                      <p>
+                        Fake pump watch/reject:{" "}
+                        {(data.paper_evidence.latestRecordRun as { rejectionCategories?: Record<string, number> })
+                          .rejectionCategories?.FAKE_PUMP ??
+                          (data.paper_evidence.recordScanner as { rejectionCategories?: Record<string, number> | undefined })
+                            ?.rejectionCategories?.FAKE_PUMP ??
+                          0}
+                      </p>
+                      <p>
+                        Score too low:{" "}
+                        {(data.paper_evidence.latestRecordRun as { rejectionCategories?: Record<string, number> })
+                          .rejectionCategories?.SCORE_TOO_LOW ??
+                          data.paper_evidence.latestRecordRun?.rejectionSummary?.SCORE_TOO_LOW ??
+                          data.paper_evidence.recordScanner.rejectionSummary?.SCORE_TOO_LOW ??
+                          0}
+                      </p>
+                      <p>
+                        Volume too low:{" "}
+                        {(data.paper_evidence.latestRecordRun as { rejectionCategories?: Record<string, number> })
+                          .rejectionCategories?.VOLUME_TOO_LOW ??
+                          data.paper_evidence.latestRecordRun?.rejectionSummary?.VOLUME_TOO_LOW ??
+                          data.paper_evidence.recordScanner.rejectionSummary?.VOLUME_TOO_LOW ??
+                          0}
+                      </p>
+                      <p>
+                        Spread too wide:{" "}
+                        {(data.paper_evidence.latestRecordRun as { rejectionCategories?: Record<string, number> })
+                          .rejectionCategories?.SPREAD_TOO_WIDE ??
+                          data.paper_evidence.latestRecordRun?.rejectionSummary?.SPREAD_TOO_WIDE ??
+                          data.paper_evidence.recordScanner.rejectionSummary?.SPREAD_TOO_WIDE ??
+                          0}
+                      </p>
+                      <p>
+                        Not tradable:{" "}
+                        {(data.paper_evidence.latestRecordRun as { rejectionCategories?: Record<string, number> })
+                          .rejectionCategories?.NOT_TRADABLE_ON_EXCHANGE ??
+                          data.paper_evidence.recordScanner.pipeline?.removedByExchangeAvailability ??
+                          0}
+                      </p>
+                    </div>
+                    {(data.paper_evidence.recordScanner.topCandidates?.length ?? 0) > 0 ? (
+                      <div className="text-xs space-y-1 border-t pt-2">
+                        <p className="font-medium">Top candidates this run</p>
+                        <ul className="space-y-0.5">
+                          {data.paper_evidence.recordScanner.topCandidates.slice(0, 5).map((c, i) => (
+                            <li key={`${c.symbol}-${i}`}>
+                              {c.symbol} — score {c.score?.toFixed(0) ?? "—"} —{" "}
+                              {(c as { runDisplayLabel?: string }).runDisplayLabel ??
+                                c.action ??
+                                "—"}{" "}
+                              — {c.reasonCode ?? c.reason ?? "—"}
+                              {c.reason && c.reasonCode === "SCORE_TOO_LOW" ? ` (${c.reason})` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground border-t pt-2">No top candidates stored for latest run.</p>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.latestRecordRun && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Rejection Summary (SIMULATED)</p>
+                    {Object.keys(data.paper_evidence.latestRecordRun.rejectionSummary ?? {}).length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No rejections recorded for latest run.</p>
+                    ) : (
+                      <ul className="text-xs space-y-0.5">
+                        {Object.entries(data.paper_evidence.latestRecordRun.rejectionSummary ?? {})
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([code, count]) => (
+                            <li key={code}>
+                              {code}: {count}
+                            </li>
+                          ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Current Record Open Trades — New Only (SIMULATED)</p>
+                    {(data.paper_evidence.recordOpenTrades?.filter((t) => !t.isCarried).length ?? 0) === 0 ? (
+                      <p className="text-xs text-muted-foreground">No new trades opened in this record yet.</p>
+                    ) : (
+                    <div className="space-y-2 text-xs">
+                      {data.paper_evidence.recordOpenTrades!.filter((t) => !t.isCarried).map((t) => (
+                        <div key={t.tradeId} className="rounded border p-2">
+                          <p className="font-medium">
+                            {t.symbol} {t.side} · {t.isCarried ? "carried" : "new in record"}
+                          </p>
+                          <p>
+                            Entry {fmtMetric(t.entryPrice)} → Current {fmtMetric(t.currentPrice)} SIM
+                          </p>
+                          <p>All-time P&L: {t.allTimePnl !== null ? fmtMetric(t.allTimePnl) : "UNKNOWN"} SIM</p>
+                          <p>P&L since record start/carry: {t.recordPnlDisplay} SIM</p>
+                          <p>
+                            Distance to TP / SL: {t.distanceToTpPct ?? "—"}% / {t.distanceToSlPct ?? "—"}%
+                          </p>
+                          <p>
+                            Thesis: {t.thesisStatus} · {t.recommendation} · {t.reasons.join("; ")}
+                          </p>
+                          {(t as { candleData?: { available: boolean; candleCount: number; timeframe: string; provider: string | null; missingReason: string | null } }).candleData && (
+                            <p>
+                              Candles:{" "}
+                              {(t as { candleData: { available: boolean; candleCount: number; timeframe: string; provider: string | null; missingReason: string | null } }).candleData.available
+                                ? "YES"
+                                : "NO"}{" "}
+                              · count{" "}
+                              {(t as { candleData: { candleCount: number } }).candleData.candleCount} ·{" "}
+                              {(t as { candleData: { timeframe: string } }).candleData.timeframe} · provider{" "}
+                              {(t as { candleData: { provider: string | null } }).candleData.provider ?? "—"}
+                              {(t as { candleData: { missingReason: string | null } }).candleData.missingReason
+                                ? ` · ${(t as { candleData: { missingReason: string | null } }).candleData.missingReason}`
+                                : ""}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && (data?.paper_evidence?.recordOpenTrades?.length ?? 0) > 0 && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Current Record Open Trade Review (SIMULATED)</p>
+                    <div className="space-y-2 text-xs">
+                      {data.paper_evidence!.recordOpenTrades!.map((t) => (
+                        <div key={`review-${t.tradeId}`} className="rounded border p-2">
+                          <p className="font-medium">
+                            {t.symbol} {t.side} · {t.isCarried ? "carried" : "new in record"}
+                          </p>
+                          <p>Thesis: {t.thesisStatus} · {t.recommendation}</p>
+                          <p>Reason: {t.reasons.join("; ")}</p>
+                          {(t as { candleData?: { available: boolean; candleCount: number; timeframe: string; provider: string | null; missingReason: string | null } }).candleData && (
+                            <p>
+                              Candles:{" "}
+                              {(t as { candleData: { available: boolean } }).candleData.available ? "YES" : "NO"} · count{" "}
+                              {(t as { candleData: { candleCount: number } }).candleData.candleCount} ·{" "}
+                              {(t as { candleData: { timeframe: string } }).candleData.timeframe} · provider{" "}
+                              {(t as { candleData: { provider: string | null } }).candleData.provider ?? "—"}
+                              {(t as { candleData: { missingReason: string | null } }).candleData.missingReason
+                                ? ` · ${(t as { candleData: { missingReason: string | null } }).candleData.missingReason}`
+                                : ""}
+                            </p>
+                          )}
+                          <p>Distance to TP / SL: {t.distanceToTpPct ?? "—"}% / {t.distanceToSlPct ?? "—"}%</p>
+                          <p>P&L since record start/carry: {t.recordPnlDisplay} SIM · All-time: {t.allTimePnl !== null ? fmtMetric(t.allTimePnl) : "UNKNOWN"} SIM</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.recordNewTradeHistory && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Current Record Trade History (SIMULATED)</p>
+                    {data.paper_evidence.recordNewTradeHistory.rows.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No new trades opened in this record yet.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-muted-foreground border-b">
+                              <th className="py-1 pr-2">Coin</th>
+                              <th className="py-1 pr-2">Entry</th>
+                              <th className="py-1 pr-2">Exit</th>
+                              <th className="py-1 pr-2">Net P&L</th>
+                              <th className="py-1">Result</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {data.paper_evidence.recordNewTradeHistory.rows.slice(0, 20).map((t) => (
+                              <tr key={t.tradeNumber} className="border-b border-dashed">
+                                <td className="py-1 pr-2">{t.coin}</td>
+                                <td className="py-1 pr-2">{t.entryTime ? new Date(t.entryTime).toLocaleString() : "—"}</td>
+                                <td className="py-1 pr-2">{t.exitTime ? new Date(t.exitTime).toLocaleString() : "OPEN"}</td>
+                                <td className="py-1 pr-2">{t.netPnl?.toFixed(4) ?? "—"} SIM</td>
+                                <td className="py-1">{t.finalResult}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Current Record Activity Feed (SIMULATED)</p>
+                    {(data.paper_evidence.recordActivityFeed?.length ?? 0) === 0 ? (
+                      <p className="text-xs text-muted-foreground">No record activity yet — run a paper evidence step.</p>
+                    ) : (
+                    <ul className="text-xs space-y-1">
+                      {data.paper_evidence.recordActivityFeed!.map((event, i) => (
+                        <li key={`${event.timestamp}-${i}`}>
+                          [{new Date(event.timestamp).toLocaleString()}] {event.type}: {event.summary}
+                        </li>
+                      ))}
+                    </ul>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && (data?.paper_evidence?.recordWarnings?.length ?? 0) > 0 && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 space-y-2">
+                    <p className="text-sm font-semibold">Current Warnings and Errors</p>
+                    <ul className="text-xs space-y-1">
+                      {data.paper_evidence!.recordWarnings!.map((w) => (
+                        <li key={w}>{w}</li>
+                      ))}
+                      {data.paper_evidence?.prismaStaleMessage && <li>{data.paper_evidence.prismaStaleMessage}</li>}
+                      {data.paper_evidence?.historicalPrismaWarning && <li>{data.paper_evidence.historicalPrismaWarning}</li>}
+                    </ul>
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.next_steps_checklist && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">System Checks</p>
+                    <p className="text-xs text-muted-foreground">Connection and readiness — safety checks, not record P&L.</p>
+                    <ul className="space-y-2 text-xs">
+                      {data.next_steps_checklist.map((item) => (
+                        <li key={item.id} className="flex items-center justify-between gap-2">
+                          <span>{item.label}</span>
+                          <Badge variant={statusVariant(item.status)}>{item.status}</Badge>
+                        </li>
+                      ))}
+                    </ul>
+                    <StatusRow label="Local Owner Mode active" status={data.local_owner_mode ? "YES" : "NO"} />
+                    <StatusRow label="Read-only API key stored" status={data.exchange_account_readiness?.readOnlyKeyConfigured ? "YES" : "NO"} />
+                    <StatusRow label="Live trading locked" status="LOCKED" />
+                    <StatusRow label="Auto execution locked" status="LOCKED" />
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.same_day_reality && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Safe Path / Same-Day Reality Check</p>
+                    <p className="text-xs text-muted-foreground">Safety checks — not current record performance.</p>
+                    <p className="text-sm font-medium">{data.same_day_reality.headline}</p>
+                    <Badge variant="outline">{data.same_day_reality.status}</Badge>
+                    {data.same_day_reality.evidence_missing.length > 0 && (
+                      <ul className="list-inside list-disc text-xs">
+                        {data.same_day_reality.evidence_missing.slice(0, 7).map((m) => (
+                          <li key={m}>{m}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.recordHistory && data.paper_evidence.recordHistory.length > 0 && (
+                  <details className="rounded-lg border p-3">
+                    <summary className="text-xs font-medium cursor-pointer">
+                      Archived Records / All-Time ({data.paper_evidence.recordHistory.filter((r) => r.status === "ARCHIVED").length})
+                    </summary>
+                    <div className="mt-3 space-y-2 text-xs">
+                      {data.paper_evidence.recordHistory
+                        .filter((r) => r.status === "ARCHIVED")
+                        .map((r) => (
+                        <div key={r.recordId} className="rounded border p-2">
+                          <p className="font-medium">
+                            Record #{r.recordNumber} — {r.recordName} — {r.status}
+                          </p>
+                          <p>
+                            P&L: {fmtMetric(r.recordPnl)} SIM · Trades: {r.closedTrades} · Win rate:{" "}
+                            {r.winRate !== null ? `${(r.winRate * 100).toFixed(1)}%` : "UNKNOWN"}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {isCurrentRecordView && (
+                <>
+                <div className="rounded-lg border border-dashed p-3 space-y-2">
+                  <p className="text-xs font-medium">Start New Record</p>
+                  <p className="text-xs text-muted-foreground">
+                    Creates a clean dashboard scorecard. Old data is archived. Open trades can be carried separately and will not count as new trades.
+                  </p>
+                  <input
+                    className="w-full rounded border bg-background px-2 py-1 text-xs"
+                    placeholder="Optional name (e.g. v0.9 Loss Shield Test)"
+                    value={recordNameInput}
+                    onChange={(e) => setRecordNameInput(e.target.value)}
+                  />
+                  <div className="flex flex-wrap gap-3 text-xs">
+                    <label className="flex items-center gap-1">
+                      <input
+                        type="radio"
+                        name="recordStartMode"
+                        checked={recordStartMode === "soft"}
+                        onChange={() => setRecordStartMode("soft")}
+                      />
+                      Soft Fresh Start (carry open trades separately)
+                    </label>
+                    <label className="flex items-center gap-1">
+                      <input
+                        type="radio"
+                        name="recordStartMode"
+                        checked={recordStartMode === "clean"}
+                        onChange={() => setRecordStartMode("clean")}
+                      />
+                      Clean Fresh Start (require no open trades)
+                    </label>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={recordLoading}
+                    onClick={() => void startPaperRecord(false)}
+                  >
+                    {recordLoading ? "Starting record…" : "Start New Record"}
+                  </Button>
+                  {recordMessage && <p className="text-xs text-muted-foreground">{recordMessage}</p>}
+                  {showStartRecordDialog && (
+                    <div className="rounded border border-amber-500/40 bg-amber-500/5 p-2 space-y-2 text-xs">
+                      <p>
+                        You have {pendingOpenTradeCount} open paper trade(s). Carry them into the new record or wait until they close.
+                      </p>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => void startPaperRecord(true)}>
+                          Carry open trades
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setShowStartRecordDialog(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" disabled={exportLogLoading} onClick={() => void exportPaperLogMode("CURRENT_RECORD_EXPORT")}>
+                    Export Current Record
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={exportLogLoading} onClick={() => void exportPaperLogMode("ALL_RECORDS_EXPORT")}>
+                    Export All Records
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={exportLogLoading} onClick={() => void exportPaperLogMode("ARCHIVED_RECORDS_EXPORT")}>
+                    Export Archived Records
+                  </Button>
+                </div>
+
+                {data?.paper_evidence?.recordHistory && data.paper_evidence.recordHistory.length > 0 && (
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <p className="text-xs font-medium">Record History</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b text-left text-muted-foreground">
+                            <th className="py-1 pr-2">#</th>
+                            <th className="py-1 pr-2">Name</th>
+                            <th className="py-1 pr-2">Version</th>
+                            <th className="py-1 pr-2">Started</th>
+                            <th className="py-1 pr-2">Ended</th>
+                            <th className="py-1 pr-2">Status</th>
+                            <th className="py-1 pr-2">P&L</th>
+                            <th className="py-1 pr-2">Trades</th>
+                            <th className="py-1 pr-2">Win rate</th>
+                            <th className="py-1 pr-2">PF</th>
+                            <th className="py-1">Export</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.paper_evidence.recordHistory.map((r) => (
+                            <tr key={r.recordId} className="border-b border-dashed">
+                              <td className="py-1 pr-2">{r.recordNumber}</td>
+                              <td className="py-1 pr-2">{r.recordName}</td>
+                              <td className="py-1 pr-2">{r.strategyVersion}</td>
+                              <td className="py-1 pr-2">{new Date(r.startedAt).toLocaleDateString()}</td>
+                              <td className="py-1 pr-2">
+                                {r.endedAt ? new Date(r.endedAt).toLocaleDateString() : "—"}
+                              </td>
+                              <td className="py-1 pr-2">{r.status}</td>
+                              <td className="py-1 pr-2">
+                                {r.recordPnl !== null ? `${fmtMetric(r.recordPnl)} SIM` : "UNKNOWN"}
+                              </td>
+                              <td className="py-1 pr-2">{r.closedTrades}</td>
+                              <td className="py-1 pr-2">
+                                {r.winRate !== null ? `${(r.winRate * 100).toFixed(1)}%` : "UNKNOWN"}
+                              </td>
+                              <td className="py-1 pr-2">{fmtMetric(r.profitFactor)}</td>
+                              <td className="py-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 px-2 text-xs"
+                                  disabled={exportLogLoading}
+                                  onClick={() =>
+                                    void exportPaperLogMode(
+                                      r.status === "ACTIVE" ? "CURRENT_RECORD_EXPORT" : "ARCHIVED_RECORDS_EXPORT",
+                                      r.recordId,
+                                    )
+                                  }
+                                >
+                                  Export
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                </>
+                )}
+
+                {isAllTimeView && (
+                <>
+                {data?.paper_evidence?.profitQuality && (
+                  <div className="rounded-lg border-2 border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
+                    <p className="text-sm font-semibold">Profit Quality (SIMULATED)</p>
+                    <p className="text-sm italic">{data.paper_evidence.profitQuality.profitQualityVerdict}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Risk mode ({data.paper_evidence.riskPerformanceScope ?? "all_time"}):{" "}
+                      {data.paper_evidence.profitQuality.riskMode.dashboardLabel}
+                      {data.paper_evidence.profitQuality.riskMode.active
+                        ? ` — ${data.paper_evidence.profitQuality.riskMode.dashboardMessage}`
+                        : ""}
+                    </p>
+                    <div className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
+                      <p>
+                        <span className="text-muted-foreground">Current balance:</span>{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.currentPaperBalance)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Portfolio P&L:</span>{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.portfolioPnl)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Realized / unrealized:</span>{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.totalRealizedPnl)} /{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.totalUnrealizedPnl)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Gross profit / loss:</span> +
+                        {fmtMetric(data.paper_evidence.profitQuality.totalGrossProfit)} / -
+                        {fmtMetric(data.paper_evidence.profitQuality.totalGrossLoss)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Wins / losses:</span>{" "}
+                        {data.paper_evidence.profitQuality.wins} / {data.paper_evidence.profitQuality.losses}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Win rate:</span>{" "}
+                        {data.paper_evidence.profitQuality.winRate !== null
+                          ? `${(data.paper_evidence.profitQuality.winRate * 100).toFixed(1)}%`
+                          : "UNKNOWN"}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Avg win / avg loss:</span> +
+                        {fmtMetric(data.paper_evidence.profitQuality.averageWin)} / -
+                        {fmtMetric(data.paper_evidence.profitQuality.averageLoss)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Loss/win ratio:</span>{" "}
+                        {data.paper_evidence.profitQuality.avgLossToWinRatio !== null
+                          ? `${data.paper_evidence.profitQuality.avgLossToWinRatio.toFixed(2)}×`
+                          : "UNKNOWN"}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Profit factor:</span>{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.profitFactor)}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Expectancy:</span>{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.expectancy)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Largest win / loss:</span> +
+                        {fmtMetric(data.paper_evidence.profitQuality.largestWin)} /{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.largestLoss)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Max drawdown:</span>{" "}
+                        {fmtMetric(data.paper_evidence.profitQuality.maxDrawdown)} SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Capital exposure:</span>{" "}
+                        {data.paper_evidence.profitQuality.capitalExposurePct !== null &&
+                        data.paper_evidence.profitQuality.capitalExposurePct !== undefined
+                          ? `${data.paper_evidence.profitQuality.capitalExposurePct.toFixed(2)}%`
+                          : data.paper_evidence.profitQuality.currentExposurePct !== null
+                            ? `${data.paper_evidence.profitQuality.currentExposurePct.toFixed(2)}%`
+                            : "UNKNOWN"}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Risk-at-stop:</span>{" "}
+                        {data.paper_evidence.profitQuality.riskAtStopPct !== null &&
+                        data.paper_evidence.profitQuality.riskAtStopPct !== undefined
+                          ? `${data.paper_evidence.profitQuality.riskAtStopPct.toFixed(2)}%`
+                          : "UNKNOWN"}
+                      </p>
+                    </div>
+                    {data.paper_evidence.historyDiagnostic && (
+                      <div className="text-xs text-muted-foreground space-y-1 border-t pt-2">
+                        <p className="font-medium text-foreground">Historical rule diagnostic (paper-only)</p>
+                        <p>
+                          Would block {data.paper_evidence.historyDiagnostic.wouldBlockAtEntry.length} of{" "}
+                          {data.paper_evidence.historyDiagnostic.totalClosedLosses} losing trades at entry
+                        </p>
+                        <p>
+                          Estimated loss reduction: ~
+                          {data.paper_evidence.historyDiagnostic.estimatedLossReductionUsd.toFixed(2)} SIM
+                        </p>
+                        <p>
+                          Winners still passing: {data.paper_evidence.historyDiagnostic.winnersStillPassing} ·
+                          blocked: {data.paper_evidence.historyDiagnostic.winnersBlocked}
+                        </p>
+                        {data.paper_evidence.historyDiagnostic.overFilterWarning && (
+                          <p>{data.paper_evidence.historyDiagnostic.overFilterWarning}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {data?.paper_evidence?.lossAnalysis &&
+                  data.paper_evidence.lossAnalysis.losses.length > 0 && (
+                    <div className="rounded-lg border border-destructive/30 p-3 space-y-2">
+                      <p className="text-sm font-medium">
+                        Loss Diagnosis — all {data.paper_evidence.lossAnalysis.analyzedCount} losing
+                        trades (SIMULATED)
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {data.paper_evidence.lossAnalysis.note}
+                      </p>
+                      {data.paper_evidence.lossAnalysis.losses.map((l) => (
+                        <div
+                          key={(l.tradeId ?? l.symbol) + String(l.netPnl ?? 0)}
+                          className="rounded border p-2 text-xs space-y-0.5"
+                        >
+                          <p className="font-medium">{l.symbol}</p>
+                          <p>
+                            Entry {l.entryPrice?.toFixed(4) ?? "UNKNOWN"} → Exit{" "}
+                            {l.exitPrice?.toFixed(4) ?? "UNKNOWN"} · Loss{" "}
+                            {l.lossAmount?.toFixed(4) ?? l.netPnl?.toFixed(4) ?? "UNKNOWN"} SIM (
+                            {l.lossPct?.toFixed(2) ?? "UNKNOWN"}%)
+                          </p>
+                          <p>
+                            Alloc {l.allocationPct?.toFixed(2) ?? "UNKNOWN"}% · SL dist{" "}
+                            {l.stopLossDistancePct?.toFixed(2) ?? "UNKNOWN"}% · TP dist{" "}
+                            {l.takeProfitDistancePct?.toFixed(2) ?? "UNKNOWN"}% · Score{" "}
+                            {l.scoreAtEntry ?? "UNKNOWN"}
+                          </p>
+                          <p>Exit: {l.exitReason ?? "UNKNOWN"}</p>
+                          <p>
+                            Avg loss too large:{" "}
+                            {l.averageLossTooLarge === null || l.averageLossTooLarge === undefined
+                              ? "UNKNOWN"
+                              : l.averageLossTooLarge
+                                ? "yes"
+                                : "no"}
+                            · Exit too late:{" "}
+                            {l.exitTooLate === null || l.exitTooLate === undefined
+                              ? "UNKNOWN"
+                              : l.exitTooLate
+                                ? "yes"
+                                : "no"}
+                            · Stop hit:{" "}
+                            {l.stopLossHit === null || l.stopLossHit === undefined
+                              ? "UNKNOWN"
+                              : l.stopLossHit
+                                ? "yes"
+                                : "no"}
+                          </p>
+                          <p>
+                            Momentum reversed:{" "}
+                            {l.momentumReversed === null ? "UNKNOWN" : l.momentumReversed ? "yes" : "no"}
+                            · Volume weakened:{" "}
+                            {l.volumeWeakened === null || l.volumeWeakened === undefined
+                              ? "UNKNOWN"
+                              : l.volumeWeakened
+                                ? "yes"
+                                : "no"}
+                            · Spread widened:{" "}
+                            {l.spreadWidened === null || l.spreadWidened === undefined
+                              ? "UNKNOWN"
+                              : l.spreadWidened
+                                ? "yes"
+                                : "no"}
+                          </p>
+                          <p className="text-muted-foreground">
+                            Suggested fix: {l.suggestedFix ?? l.suggestedRuleImprovement ?? "UNKNOWN"}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                {data?.paper_evidence?.performanceSummary && (
+                  <details className="rounded-lg border p-3">
+                    <summary className="text-xs font-medium cursor-pointer">
+                      Detailed performance metrics (SIMULATED)
+                    </summary>
+                    <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                      <p>Expectancy/trade: {fmtMetric(data.paper_evidence.performanceSummary.expectancyPerTrade)} SIM</p>
+                      <p>Best coin: {data.paper_evidence.performanceSummary.bestCoin ?? "UNKNOWN"}</p>
+                      <p>Worst coin: {data.paper_evidence.performanceSummary.worstCoin ?? "UNKNOWN"}</p>
+                      <p>Most traded: {data.paper_evidence.performanceSummary.mostTradedCoin ?? "UNKNOWN"}</p>
+                      <p>
+                        Avg duration:{" "}
+                        {data.paper_evidence.performanceSummary.averageTradeDurationHours !== null
+                          ? `${data.paper_evidence.performanceSummary.averageTradeDurationHours}h`
+                          : "UNKNOWN"}
+                      </p>
+                      <p>Stop-loss exits: {data.paper_evidence.performanceSummary.stopLossHitCount}</p>
+                      <p>Take-profit exits: {data.paper_evidence.performanceSummary.takeProfitHitCount}</p>
+                      <p>Expiry exits: {data.paper_evidence.performanceSummary.expiryExitCount}</p>
+                      <p>Thesis invalidation: {data.paper_evidence.performanceSummary.thesisInvalidationExitCount}</p>
+                      <p>
+                        Capital exposure:{" "}
+                        {data.paper_evidence.performanceSummary.capitalExposurePct !== null &&
+                        data.paper_evidence.performanceSummary.capitalExposurePct !== undefined
+                          ? `${data.paper_evidence.performanceSummary.capitalExposurePct.toFixed(2)}%`
+                          : data.paper_evidence.performanceSummary.currentExposurePct !== null
+                            ? `${data.paper_evidence.performanceSummary.currentExposurePct.toFixed(2)}%`
+                            : "UNKNOWN"}
+                      </p>
+                      <p>
+                        Risk-at-stop:{" "}
+                        {data.paper_evidence.performanceSummary.riskAtStopPct !== null &&
+                        data.paper_evidence.performanceSummary.riskAtStopPct !== undefined
+                          ? `${data.paper_evidence.performanceSummary.riskAtStopPct.toFixed(2)}%`
+                          : "UNKNOWN"}
+                      </p>
+                      <p>
+                        Peak capital exposure:{" "}
+                        {data.paper_evidence.performanceSummary.maxExposureUsedPct !== null
+                          ? `${data.paper_evidence.performanceSummary.maxExposureUsedPct.toFixed(2)}%`
+                          : "UNKNOWN"}
+                      </p>
+                      <p>
+                        Largest single trade:{" "}
+                        {data.paper_evidence.performanceSummary.largestSingleTradeExposurePct !== null
+                          ? `${data.paper_evidence.performanceSummary.largestSingleTradeExposurePct.toFixed(2)}%`
+                          : "UNKNOWN"}
+                      </p>
+                    </div>
+                  </details>
+                )}
+
+                <details className="rounded-lg border p-3">
+                  <summary className="text-xs font-medium cursor-pointer">
+                    Advanced / All-Time Debug
+                  </summary>
+                  <div className="mt-3 space-y-3 text-xs">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">All-time paper P&L (SIMULATED)</p>
+                    <p className="font-medium">
+                      {(data.paper_evidence.allTimeDebug?.simulatedNetPnl ?? data.paper_evidence.simulatedNetPnl).toFixed(4)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      W/L: {data.paper_evidence.allTimeDebug?.wins ?? data.paper_evidence.wins}/
+                      {data.paper_evidence.allTimeDebug?.losses ?? data.paper_evidence.losses}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">All-time paper runs</p>
+                    <p className="font-medium">{data.paper_evidence.allTimeDebug?.paperRuns ?? data.paper_evidence.paperRuns ?? "—"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Last run: {data.paper_evidence.allTimeDebug?.lastRunAt ?? data.paper_evidence.lastRunAt ?? "—"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">All-time open / closed</p>
+                    <p className="font-medium">
+                      {data.paper_evidence.allTimeDebug?.openPaperTrades ?? data.paper_evidence.openPaperTrades} /{" "}
+                      {data.paper_evidence.allTimeDebug?.closedPaperTrades ?? data.paper_evidence.closedPaperTrades}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">Bot status</p>
+                    <p className="font-medium">{data.paper_evidence.currentStatus}</p>
+                    <p className="text-xs text-muted-foreground">Risk: {data.paper_evidence.riskLevel ?? "—"}</p>
+                  </div>
+                </div>
                 <div className="rounded-lg border p-3 space-y-1">
-                  <p className="text-xs font-medium">Evidence Counts</p>
-                  <p>Paper Runs: {data.paper_evidence.paperRuns ?? "—"}</p>
+                  <p className="text-xs font-medium">Evidence Counts (all-time)</p>
+                  <p>Paper Runs: {data.paper_evidence.allTimeDebug?.paperRuns ?? data.paper_evidence.paperRuns ?? "—"}</p>
                   <p>Candidates Stored: {data.paper_evidence.candidatesStored ?? "—"}</p>
                   <p>Signals Stored: {data.paper_evidence.signalsStored ?? "—"}</p>
                   <p>Snapshots Stored: {data.paper_evidence.snapshotsStored ?? "—"}</p>
@@ -707,19 +2098,117 @@ export function DashboardShell() {
                       data.paper_evidence.paperEvidenceCount}
                   </p>
                 </div>
-                <p>Open Paper Trades: {data.paper_evidence.openPaperTrades}</p>
-                <p>Closed Paper Trades: {data.paper_evidence.closedPaperTrades}</p>
+                  </div>
+                </details>
+
+                {(data.paper_evidence.scanner?.finalCandidateOutputs?.length ??
+                  data.paper_evidence.scanner?.tradablePaperCandidates?.length ??
+                  0) > 0 && (
+                    <div className="rounded-lg border p-3 space-y-1">
+                      <p className="text-xs font-medium">Best candidates (real market data)</p>
+                      <ul className="text-xs space-y-0.5">
+                        {(
+                          data.paper_evidence.scanner?.finalCandidateOutputs?.slice(0, 5) ??
+                          data.paper_evidence.scanner?.tradablePaperCandidates?.slice(0, 5) ??
+                          []
+                        ).map((c, i) => (
+                          <li key={`best-${"symbol" in c ? c.symbol : i}-${i}`}>
+                            {"symbol" in c ? c.symbol : "—"} —{" "}
+                            {"scores" in c
+                              ? `score ${c.scores.finalTotal.toFixed(0)}`
+                              : `score ${(c as { score?: number }).score?.toFixed(0) ?? "—"}`}{" "}
+                            —{" "}
+                            {"finalRecommendation" in c
+                              ? c.finalRecommendation
+                              : (c as { action?: string }).action ?? "—"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                <StatusRow label="Paper Mode" status={data.paper_evidence.paperModeReady ? "READY" : "NO"} />
+                <StatusRow
+                  label="Market Data"
+                  status={data.paper_evidence.marketDataReady ? "READY" : "NOT_CONFIGURED"}
+                />
+                <p>Last run in current record: {data.paper_evidence.lastRunAt ?? "—"}</p>
+                <p>Open paper trades (new in record): {data.paper_evidence.openPaperTrades}</p>
+                <p>Closed paper trades (in record): {data.paper_evidence.closedPaperTrades}</p>
                 <p>No-Trade Signals: {data.paper_evidence.noTradeSignals}</p>
                 <div className="rounded-lg border p-3 space-y-1">
                   <p className="text-xs font-medium">Open Trade Capacity</p>
-                  <p>Max open trades: {data.paper_evidence.maxOpenTrades ?? "—"}</p>
-                  <p>Open trades: {data.paper_evidence.openPaperTrades}</p>
-                  <p>Available slots: {data.paper_evidence.availableSlots ?? "—"}</p>
+                  <p>
+                    Base max open trades:{" "}
+                    {data.paper_evidence.openTradeCapacity?.baseMaxOpenTrades ??
+                      data.paper_evidence.maxOpenTrades ??
+                      "UNKNOWN"}
+                  </p>
+                  <p>
+                    Dynamic max open trades:{" "}
+                    {data.paper_evidence.openTradeCapacity?.dynamicMaxOpenTrades ??
+                      data.paper_evidence.maxOpenTrades ??
+                      "UNKNOWN"}
+                  </p>
+                  <p>Current open trades: {data.paper_evidence.openPaperTrades}</p>
+                  <p>Available slots: {data.paper_evidence.availableSlots ?? "UNKNOWN"}</p>
+                  <p>
+                    Capital exposure:{" "}
+                    {data.paper_evidence.openTradeCapacity?.capitalExposurePct !== undefined
+                      ? `${data.paper_evidence.openTradeCapacity.capitalExposurePct.toFixed(2)}%`
+                      : data.paper_evidence.openTradeCapacity?.totalExposurePct !== undefined
+                        ? `${data.paper_evidence.openTradeCapacity.totalExposurePct.toFixed(2)}%`
+                        : "UNKNOWN"}
+                  </p>
+                  <p>
+                    Risk-at-stop:{" "}
+                    {data.paper_evidence.openTradeCapacity?.riskAtStopPct !== undefined
+                      ? `${data.paper_evidence.openTradeCapacity.riskAtStopPct.toFixed(2)}%`
+                      : "UNKNOWN"}
+                  </p>
+                  <p>
+                    Max allowed risk-at-stop:{" "}
+                    {data.paper_evidence.openTradeCapacity?.maxAllowedRiskAtStopPct ??
+                      data.paper_evidence.openTradeCapacity?.maxTotalExposurePct ??
+                      "UNKNOWN"}
+                    %
+                  </p>
+                  <p>
+                    Max allowed daily risk used:{" "}
+                    {data.paper_evidence.openTradeCapacity?.maxAllowedDailyRiskPct ??
+                      data.paper_evidence.openTradeCapacity?.dailyRiskBudgetPct ??
+                      "UNKNOWN"}
+                    %
+                  </p>
+                  <p>
+                    Daily risk used:{" "}
+                    {data.paper_evidence.openTradeCapacity?.riskUsedTodayPct !== undefined
+                      ? `${data.paper_evidence.openTradeCapacity.riskUsedTodayPct.toFixed(2)}%`
+                      : "UNKNOWN"}
+                  </p>
                   <p>
                     New trade opening:{" "}
                     {data.paper_evidence.newTradeOpening ??
                       (data.paper_evidence.maxOpenTradesReached ? "BLOCKED" : "ALLOWED")}
                   </p>
+                  {data.paper_evidence.openTradeCapacity?.newTradeAllowedReason && (
+                    <p className="text-muted-foreground text-xs">
+                      {data.paper_evidence.openTradeCapacity.newTradeAllowedReason}
+                    </p>
+                  )}
+                  {data.paper_evidence.openTradeCapacity?.capacityLimitedBy && (
+                    <p className="text-amber-600 text-xs">
+                      Limited by: {data.paper_evidence.openTradeCapacity.capacityLimitedBy}
+                    </p>
+                  )}
+                  {data.paper_evidence.openTradeCapacity?.capacityFactors &&
+                    data.paper_evidence.openTradeCapacity.capacityFactors.length > 0 && (
+                      <ul className="list-inside list-disc text-xs text-muted-foreground">
+                        {data.paper_evidence.openTradeCapacity.capacityFactors.map((f) => (
+                          <li key={f}>{f}</li>
+                        ))}
+                      </ul>
+                    )}
                   {data.paper_evidence.maxOpenTradesReached && (
                     <p className="text-amber-600">
                       Reason: {data.paper_evidence.maxOpenTradesBlockReason ?? "MAX_OPEN_TRADES_REACHED"}
@@ -849,51 +2338,9 @@ export function DashboardShell() {
                       </ul>
                     </div>
                   )}
-                {data.paper_evidence.prismaClientStale && data.paper_evidence.prismaStaleMessage && (
-                  <p className="text-sm text-destructive rounded-lg border border-destructive/30 p-2">
-                    {data.paper_evidence.prismaStaleMessage}
-                  </p>
-                )}
-                {data.paper_evidence.historicalPrismaWarning && !data.paper_evidence.prismaClientStale && (
-                  <p className="text-xs text-muted-foreground rounded-lg border p-2">
-                    Previous warning: {data.paper_evidence.historicalPrismaWarning}
-                  </p>
-                )}
-                <p>
-                  Simulated Net P&L: {data.paper_evidence.simulatedNetPnl.toFixed(4)} (SIMULATED)
-                </p>
-                <p>
-                  Wins / Losses / Breakevens: {data.paper_evidence.wins} / {data.paper_evidence.losses}{" "}
-                  / {data.paper_evidence.breakevens}
-                </p>
-
-                {data.paper_evidence.safetyVerification && (
-                  <div className="rounded-lg border border-green-500/30 p-3 space-y-1">
-                    <p className="text-xs font-medium">Safety Verification (SIMULATED)</p>
-                    <p>Live trading: LOCKED</p>
-                    <p>
-                      Auto execution:{" "}
-                      {data.paper_evidence.safetyVerification.autoExecutionLocked ? "LOCKED" : "—"}
-                    </p>
-                    <ul className="text-xs space-y-0.5">
-                      {data.paper_evidence.safetyVerification.checks.map((c) => (
-                        <li key={c.id}>
-                          {c.passed ? "✓" : "✗"} {c.id.replace(/_/g, " ")}
-                        </li>
-                      ))}
-                    </ul>
-                    {data.paper_evidence.nextSafeAction && (
-                      <p className="text-xs text-muted-foreground">
-                        Next safe action: {data.paper_evidence.nextSafeAction}
-                      </p>
-                    )}
-                  </div>
-                )}
-
                 {data.paper_evidence.tradeHistory && (
                   <div className="rounded-lg border p-3 space-y-2">
-                    <p className="text-xs font-medium">Paper Trade History (SIMULATED)</p>
-                    <p className="text-xs text-muted-foreground">{data.paper_evidence.tradeHistory.warning}</p>
+                    <p className="text-xs font-medium">Trade History (SIMULATED)</p>
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <p>Total closed: {data.paper_evidence.tradeHistory.summary.totalTrades}</p>
                       <p>
@@ -902,14 +2349,8 @@ export function DashboardShell() {
                           ? `${(data.paper_evidence.tradeHistory.summary.winRate * 100).toFixed(1)}%`
                           : "—"}
                       </p>
-                      <p>Winners: {data.paper_evidence.tradeHistory.summary.profitableTrades}</p>
-                      <p>Losers: {data.paper_evidence.tradeHistory.summary.losingTrades}</p>
                       <p>
                         Net P&L: {data.paper_evidence.tradeHistory.summary.netProfitLoss.toFixed(4)} (SIM)
-                      </p>
-                      <p>
-                        Avg leverage:{" "}
-                        {data.paper_evidence.tradeHistory.summary.averageLeverageUsed?.toFixed(2) ?? "1.00"}x
                       </p>
                     </div>
                     {data.paper_evidence.tradeHistory.rows.length > 0 && (
@@ -917,14 +2358,17 @@ export function DashboardShell() {
                         <table className="w-full text-xs">
                           <thead>
                             <tr className="text-left text-muted-foreground">
-                              <th className="pr-2">#</th>
                               <th className="pr-2">Coin</th>
-                              <th className="pr-2">Lev</th>
+                              <th className="pr-2">Market</th>
                               <th className="pr-2">Entry</th>
                               <th className="pr-2">Exit</th>
+                              <th className="pr-2">Entry px</th>
+                              <th className="pr-2">Exit px</th>
+                              <th className="pr-2">Alloc%</th>
+                              <th className="pr-2">Lev</th>
                               <th className="pr-2">Net P&L</th>
-                              <th className="pr-2">%</th>
-                              <th className="pr-2">Duration</th>
+                              <th className="pr-2">P&L%</th>
+                              <th className="pr-2">Entry reason</th>
                               <th className="pr-2">Exit reason</th>
                               <th>Result</th>
                             </tr>
@@ -932,15 +2376,28 @@ export function DashboardShell() {
                           <tbody>
                             {data.paper_evidence.tradeHistory.rows.slice(0, 20).map((t) => (
                               <tr key={t.tradeNumber} className="border-t border-border/50">
-                                <td className="pr-2 py-1">{t.tradeNumber}</td>
-                                <td className="pr-2">{t.coin}</td>
-                                <td className="pr-2">{t.leverageUsed}x</td>
-                                <td className="pr-2">{t.entryPrice?.toFixed(4) ?? "—"}</td>
+                                <td className="pr-2 py-1">{t.coin}</td>
+                                <td className="pr-2">{t.marketType}</td>
+                                <td className="pr-2">
+                                  {t.entryTime ? new Date(t.entryTime).toLocaleString() : "—"}
+                                </td>
+                                <td className="pr-2">
+                                  {t.exitTime ? new Date(t.exitTime).toLocaleString() : "—"}
+                                </td>
+                                <td className="pr-2">{t.entryPrice?.toFixed(4) ?? "UNKNOWN"}</td>
                                 <td className="pr-2">{t.exitPrice?.toFixed(4) ?? "—"}</td>
+                                <td className="pr-2">
+                                  {t.allocationPct?.toFixed(2) ?? "UNKNOWN"}%
+                                </td>
+                                <td className="pr-2">{t.leverageUsed}x</td>
                                 <td className="pr-2">{t.netPnl?.toFixed(4) ?? "—"} SIM</td>
                                 <td className="pr-2">{t.pctGainLoss?.toFixed(2) ?? "—"}%</td>
-                                <td className="pr-2">{t.durationHours ?? "—"}h</td>
-                                <td className="pr-2">{t.exitReason ?? "—"}</td>
+                                <td className="pr-2 max-w-[120px] truncate" title={t.entryReason}>
+                                  {t.entryReason}
+                                </td>
+                                <td className="pr-2 max-w-[120px] truncate" title={t.exitReason ?? ""}>
+                                  {t.exitReason ?? "—"}
+                                </td>
                                 <td>{t.finalResult}</td>
                               </tr>
                             ))}
@@ -951,48 +2408,59 @@ export function DashboardShell() {
                   </div>
                 )}
 
+                {data.paper_evidence.activeTradingRules && (
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <p className="text-xs font-medium">Active Trading Rules (paper-only)</p>
+                    {data.paper_evidence.activeTradingRules.groups.map((g) => (
+                      <div key={g.title}>
+                        <p className="text-xs font-medium">{g.title}</p>
+                        <ul className="text-xs text-muted-foreground list-disc pl-4">
+                          {g.rules.map((r) => (
+                            <li key={r}>{r}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                    <ul className="text-xs text-muted-foreground list-disc pl-4">
+                      {data.paper_evidence.activeTradingRules.safetyCaps.map((c) => (
+                        <li key={c}>{c}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+
                 <StatusRow label="Evidence status" status={data.paper_evidence.currentStatus} />
 
                 {data.scanner_provider_status && (
                   <div className="rounded-lg border p-3 space-y-2">
-                    <p className="text-xs font-medium">Scanner provider status</p>
+                    <p className="text-xs font-medium">Provider status</p>
                     <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
                       {data.scanner_provider_status.providers.map((p) => (
                         <div key={p.provider} className="rounded border p-2 space-y-0.5">
                           <p className="font-medium text-foreground">{p.label}</p>
+                          <p>Connection: {p.connectionStatusLabel ?? p.status}</p>
                           <p>
-                            Connection: {p.connectionStatusLabel ?? p.status}
-                          </p>
-                          <p>
-                            Current run: {p.currentRunContribution ?? (p.contributedLastRun ? "CONTRIBUTED" : "NOT_USED")}
+                            Current run:{" "}
+                            {p.currentRunContribution ??
+                              (p.contributedLastRun ? "CONTRIBUTED" : "NOT_USED")}
                           </p>
                           {p.currentRunReason && <p>Reason: {p.currentRunReason}</p>}
                         </div>
                       ))}
                     </div>
-                    {data.scanner_provider_status.lastRunContributions && (
-                      <p className="text-xs text-muted-foreground">
-                        Last run — CoinGecko:{" "}
-                        {data.scanner_provider_status.lastRunContributions.coingeckoContributed
-                          ? "yes"
-                          : "no"}
-                        , DexScreener:{" "}
-                        {data.scanner_provider_status.lastRunContributions.dexscreenerContributed
-                          ? "yes"
-                          : "no"}
-                        , DeFiLlama:{" "}
-                        {data.scanner_provider_status.lastRunContributions.defillamaContributed
-                          ? "yes"
-                          : "no"}
-                        , Kraken:{" "}
-                        {data.scanner_provider_status.lastRunContributions.krakenContributed
-                          ? "yes"
-                          : "no"}
-                      </p>
-                    )}
                   </div>
                 )}
 
+                {data.paper_evidence.prismaClientStale && data.paper_evidence.prismaStaleMessage && (
+                  <p className="text-sm text-destructive rounded-lg border border-destructive/30 p-2">
+                    {data.paper_evidence.prismaStaleMessage}
+                  </p>
+                )}
+
+                <details className="rounded-lg border p-3">
+                  <summary className="text-xs font-medium cursor-pointer">Detailed diagnostics</summary>
+                  <div className="mt-3 space-y-3">
                 {data.paper_evidence.scanner && (
                   <div className="rounded-lg border p-3 space-y-1">
                     <p className="text-xs font-medium">Scanner Mode</p>
@@ -1165,7 +2633,8 @@ export function DashboardShell() {
                           <li key={`${c.symbol}-top-${i}`}>
                             {c.symbol} — {c.riskTier ?? "—"} — score {c.score?.toFixed(0) ?? "—"}, 24h{" "}
                             {c.change24hPct?.toFixed(1) ?? "—"}%, spread{" "}
-                            {c.spreadBps?.toFixed(1) ?? "—"} bps — {c.action}: {c.reason}
+                            {c.spreadBps?.toFixed(1) ?? "—"} bps —{" "}
+                            {(c as { runDisplayLabel?: string }).runDisplayLabel ?? c.action}: {c.reason}
                           </li>
                         ))}
                       </ul>
@@ -1184,13 +2653,26 @@ export function DashboardShell() {
                     </ul>
                   </div>
                 )}
+                  </div>
+                </details>
+                </>
+                )}
               </>
             ) : (
               <p className="text-muted-foreground">No paper evidence runs yet.</p>
             )}
+            <div className="flex flex-wrap gap-2">
             <Button onClick={() => void runPaperEvidenceStep()} disabled={paperRunLoading}>
               {paperRunLoading ? "Running scanner…" : "Run Paper Evidence Step"}
             </Button>
+            <Button
+              variant="outline"
+              onClick={() => void exportPaperLog()}
+              disabled={exportLogLoading}
+            >
+              {exportLogLoading ? "Exporting…" : "Export Full Paper Log"}
+            </Button>
+            </div>
             {paperRunLoading && (
               <p className="text-xs text-muted-foreground">
                 Elapsed: {(paperRunElapsedMs / 1000).toFixed(1)}s
@@ -1199,6 +2681,20 @@ export function DashboardShell() {
             {paperRunError && (
               <p className="text-sm text-destructive rounded-lg border border-destructive/30 p-2">
                 Current run error: {paperRunError}
+              </p>
+            )}
+            {exportStatus !== "EXPORT_READY" && (
+              <p
+                className={`text-sm rounded-lg border p-2 ${
+                  exportStatus === "EXPORT_FAILED"
+                    ? "text-destructive border-destructive/30"
+                    : exportStatus === "EXPORT_DOWNLOADED"
+                      ? "text-green-700 border-green-500/30 dark:text-green-400"
+                      : "text-muted-foreground border-border"
+                }`}
+              >
+                Export status: {exportStatus}
+                {exportMessage ? ` — ${exportMessage}` : ""}
               </p>
             )}
             {paperRunWarnings.length > 0 && (
@@ -1211,7 +2707,7 @@ export function DashboardShell() {
                 </ul>
               </div>
             )}
-            {paperRunResult && (
+            {isAllTimeView && paperRunResult && (
               <div className="space-y-2 rounded-lg border p-3">
                 <StatusRow label="Current run status" status={paperRunResult.status} />
                 {paperRunResult.runOutcomeMessage && (
@@ -1285,9 +2781,43 @@ export function DashboardShell() {
                 )}
                 <p>Open trades: {paperRunResult.openPaperTrades}</p>
                 <p>Closed trades: {paperRunResult.closedPaperTrades}</p>
-                <p>Simulated net P&L: {paperRunResult.simulatedNetPnl.toFixed(4)} (portfolio SIM)</p>
-                {paperRunResult.currentRunPnlDelta !== undefined && (
-                  <p>Current run P&L delta: {paperRunResult.currentRunPnlDelta.toFixed(4)} SIM</p>
+                <div className="rounded-lg border p-3 space-y-1 text-xs">
+                  <p className="font-medium">Current run P&L (SIMULATED)</p>
+                  <p>Portfolio P&L before run: {paperRunResult.portfolioPnlBeforeRun?.toFixed(4) ?? "UNKNOWN"} SIM</p>
+                  <p>Portfolio P&L after run: {paperRunResult.portfolioPnlAfterRun?.toFixed(4) ?? "UNKNOWN"} SIM</p>
+                  <p>
+                    Realized P&L this run: {paperRunResult.realizedPnlThisRun?.toFixed(4) ?? "UNKNOWN"} SIM
+                  </p>
+                  <p>
+                    Unrealized P&L change this run:{" "}
+                    {paperRunResult.unrealizedPnlChangeThisRun?.toFixed(4) ?? "UNKNOWN"} SIM
+                  </p>
+                  <p>
+                    Net change this run: {paperRunResult.currentRunPnlDelta?.toFixed(4) ?? "UNKNOWN"} SIM
+                  </p>
+                  <p className="text-muted-foreground">
+                    Realized = closed trades this run. Unrealized change = mark-to-market move on open trades.
+                    Net = realized + unrealized change.
+                  </p>
+                </div>
+                <p>Simulated net P&L (all time realized): {paperRunResult.simulatedNetPnl.toFixed(4)} SIM</p>
+                {paperRunResult.deepEvaluationExplanation && (
+                  <p className="text-xs text-muted-foreground">{paperRunResult.deepEvaluationExplanation}</p>
+                )}
+                {paperRunResult.dynamicCapacity && (
+                  <div className="text-xs space-y-0.5">
+                    <p>
+                      Dynamic capacity — base: {paperRunResult.dynamicCapacity.baseMaxOpenTrades} · dynamic:{" "}
+                      {paperRunResult.dynamicCapacity.dynamicMaxOpenTrades} · open:{" "}
+                      {paperRunResult.dynamicCapacity.currentOpenTrades} · slots:{" "}
+                      {paperRunResult.dynamicCapacity.availableSlots}
+                    </p>
+                    {paperRunResult.dynamicCapacity.factors.map((f) => (
+                      <p key={f} className="text-muted-foreground">
+                        {f}
+                      </p>
+                    ))}
+                  </div>
                 )}
                 {paperRunResult.openedTrades && paperRunResult.openedTrades.length > 0 && (
                   <div>
@@ -1336,8 +2866,8 @@ export function DashboardShell() {
                     <ul className="list-inside list-disc text-xs text-muted-foreground">
                       {paperRunResult.topCandidates.map((c, i) => (
                         <li key={`${c.symbol}-run-top-${i}`}>
-                          {c.symbol} score {c.opportunityScore.toFixed(0)} — {c.reasonCode}:{" "}
-                          {c.reasonText}
+                          {c.symbol} score {c.opportunityScore.toFixed(0)} —{" "}
+                          {c.runDisplayLabel ?? c.recommendationLabel ?? c.reasonCode}: {c.reasonText}
                         </li>
                       ))}
                     </ul>

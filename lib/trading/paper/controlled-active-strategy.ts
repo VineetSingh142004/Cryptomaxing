@@ -7,6 +7,12 @@ import {
   type RiskTier,
 } from "@/lib/trading/paper/scanner-config";
 import { PAPER_CONFIG, type PaperReasonCode } from "@/lib/trading/paper/paper-config";
+import {
+  evaluateExtremeRiskEntry,
+  evaluateRiskReward,
+  tierStopLossBps,
+  tierTakeProfitBps,
+} from "@/lib/trading/paper/profit-protection";
 
 export type StrategyDecision = "LONG" | "SHORT" | "NO_TRADE";
 
@@ -32,32 +38,6 @@ export interface ControlledActiveStrategyResult {
   simulatedLabel?: "SIMULATED_PAPER_ONLY";
 }
 
-function tierStopLossBps(tier: RiskTier): number {
-  switch (tier) {
-    case "MAJOR":
-      return PAPER_CONFIG.stopLossBps;
-    case "ALT_LIQUID":
-      return PAPER_CONFIG.stopLossBps * 1.1;
-    case "HIGH_VOLATILITY":
-      return PAPER_CONFIG.stopLossBps * 1.5;
-    case "EXTREME_RISK":
-      return PAPER_CONFIG.stopLossBps * 2;
-  }
-}
-
-function tierTakeProfitBps(tier: RiskTier): number {
-  switch (tier) {
-    case "MAJOR":
-      return PAPER_CONFIG.takeProfitBps;
-    case "ALT_LIQUID":
-      return PAPER_CONFIG.takeProfitBps * 0.9;
-    case "HIGH_VOLATILITY":
-      return PAPER_CONFIG.takeProfitBps * 1.2;
-    case "EXTREME_RISK":
-      return PAPER_CONFIG.takeProfitBps * 1.5;
-  }
-}
-
 function tierExpiryHours(tier: RiskTier): number {
   switch (tier) {
     case "MAJOR":
@@ -77,6 +57,7 @@ export function getTradeExpiryHoursForTier(tier: RiskTier): number {
 export function evaluateControlledActiveStrategy(
   candidate: ScanCandidate,
   momentumPct: number,
+  options?: { allocationMultiplier?: number },
 ): ControlledActiveStrategyResult {
   const riskTier = candidate.riskTier;
   const riskPercent = riskPercentForTier(riskTier);
@@ -143,16 +124,6 @@ export function evaluateControlledActiveStrategy(
   const stopPct = tierStopLossBps(riskTier) / 10_000;
   const tpPct = tierTakeProfitBps(riskTier) / 10_000;
 
-  if (tpPct / stopPct < 1.05) {
-    return {
-      decision: "NO_TRADE",
-      confidence: candidate.opportunityScore / 100,
-      reason: "Risk/reward ratio too weak for tier",
-      reasonCode: "RISK_REWARD_TOO_WEAK",
-      ...base,
-    };
-  }
-
   const plannedStopLoss = decision === "LONG" ? mid * (1 - stopPct) : mid * (1 + stopPct);
   const plannedTakeProfit = decision === "LONG" ? mid * (1 + tpPct) : mid * (1 - tpPct);
 
@@ -184,10 +155,56 @@ export function evaluateControlledActiveStrategy(
     liquidityScore: candidate.liquidityScore,
     leverage: leverage.leverageUsed,
     downsideRiskScore: candidate.pumpRiskPenalty + candidate.riskPenalty,
+    allocationMultiplier: options?.allocationMultiplier,
   });
 
   const riskAmount = sizing.riskAmountUsd;
   const simulatedSize = sizing.simulatedSize > 0 ? sizing.simulatedSize : null;
+
+  const rrCheck = evaluateRiskReward({
+    riskTier,
+    side: decision,
+    entryPrice: mid,
+    plannedStopLoss,
+    plannedTakeProfit,
+    riskAmountUsd: riskAmount,
+    opportunityScore: candidate.opportunityScore,
+    winProbability: confidence,
+  });
+
+  if (!rrCheck.passed) {
+    return {
+      decision: "NO_TRADE",
+      confidence,
+      reason: `${rrCheck.reasonText} | ${rrCheck.decisionReasoning.join("; ")}`,
+      reasonCode: rrCheck.reasonCode,
+      ...base,
+      entryPrice: mid,
+      plannedStopLoss,
+      plannedTakeProfit,
+    };
+  }
+
+  const extremeCheck = evaluateExtremeRiskEntry({
+    riskTier,
+    opportunityScore: candidate.opportunityScore,
+    confidence,
+    liquidityScore: candidate.liquidityScore,
+    rewardRiskRatio: rrCheck.rewardRiskRatio,
+  });
+
+  if (!extremeCheck.allowed) {
+    return {
+      decision: "NO_TRADE",
+      confidence,
+      reason: extremeCheck.reasonText,
+      reasonCode: extremeCheck.reasonCode,
+      ...base,
+      entryPrice: mid,
+      plannedStopLoss,
+      plannedTakeProfit,
+    };
+  }
 
   const warning =
     riskTier === "EXTREME_RISK"
@@ -199,8 +216,8 @@ export function evaluateControlledActiveStrategy(
   return {
     decision,
     confidence: Math.min(0.95, confidence),
-    reason: `${decision} — ${riskTier}, score ${candidate.opportunityScore.toFixed(0)}, 24h ${candidate.change24hPct.toFixed(1)}% | ${sizing.sizingReason}`,
-    reasonCode: "TRADE_OPENED",
+    reason: `${decision} — ${riskTier}, score ${candidate.opportunityScore.toFixed(0)}, 24h ${candidate.change24hPct.toFixed(1)}% | R:R ${rrCheck.rewardRiskRatio.toFixed(2)} EV ${rrCheck.expectedValueUsd >= 0 ? "+" : ""}${rrCheck.expectedValueUsd.toFixed(2)} SIM | ${sizing.sizingReason}`,
+    reasonCode: "TRADE_READY",
     entryPrice: mid,
     plannedStopLoss,
     plannedTakeProfit,

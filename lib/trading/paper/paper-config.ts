@@ -1,4 +1,5 @@
 export type PaperReasonCode =
+  | "TRADE_READY"
   | "TRADE_OPENED"
   | "SCORE_TOO_LOW"
   | "SPREAD_TOO_WIDE"
@@ -23,7 +24,12 @@ export type PaperReasonCode =
   | "EARLY_LOSS_CUT"
   | "MAX_TOTAL_EXPOSURE_REACHED"
   | "DYNAMIC_CAPACITY_FULL"
-  | "CORRELATED_EXPOSURE_LIMIT";
+  | "CORRELATED_EXPOSURE_LIMIT"
+  | "REJECTED_BAD_RISK_REWARD"
+  | "REJECTED_FAKE_PUMP_RISK"
+  | "WATCH_ONLY_FAKE_PUMP_RISK"
+  | "NO_TRADE_BEST_DECISION"
+  | "THESIS_INVALIDATED_EXIT";
 
 function envInt(key: string, fallback: number): number {
   const v = process.env[key]?.trim();
@@ -72,6 +78,8 @@ export const PAPER_CONFIG = {
   strategyName: "controlled-active-paper-v1" as const,
   simulatedAccountUsd: 10_000,
 } as const;
+
+export { CURRENT_PAPER_STRATEGY_VERSION } from "@/lib/trading/paper/paper-strategy-version";
 
 export const STABLECOIN_BASES = new Set([
   "USDT",

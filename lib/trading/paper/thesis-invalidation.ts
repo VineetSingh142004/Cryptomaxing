@@ -3,6 +3,7 @@ import type { PaperTradeSide } from "@prisma/client";
 
 export type PaperExitReason =
   | "THESIS_INVALIDATED"
+  | "THESIS_INVALIDATED_EXIT"
   | "MOMENTUM_REVERSAL"
   | "VOLUME_COLLAPSE"
   | "LIQUIDITY_WEAKENING"
@@ -147,20 +148,36 @@ export function evaluateThesisInvalidation(input: ThesisInvalidationInput): Thes
     primaryFactor ??= "High volatility";
   }
 
-  if (isLosing && pnlBps <= -earlyLossCutBps && score >= 30) {
+  if (isLosing && pnlBps <= -earlyLossCutBps && score >= 45) {
     score += 15;
     signals.push(`Early loss cut — down ${pnlBps.toFixed(0)} bps with weakening thesis`);
     exitReason = "EARLY_LOSS_CUT";
     primaryFactor ??= "Cut loss early";
   }
 
-  if (score >= 40 && isLosing) {
+  if (isLosing && pnlBps < -25 && momentum < 0 && volTrend < 0.7) {
+    score += 20;
+    signals.push("Price failed to continue after entry — fake continuation risk");
+    if (!exitReason) exitReason = "THESIS_INVALIDATED";
+    primaryFactor ??= "Post-entry continuation failed";
+  }
+
+  if (score >= 40 && isLosing && signals.length >= 2) {
     signals.push("Trade thesis no longer valid — exit to avoid larger loss");
     exitReason = exitReason ?? "THESIS_INVALIDATED";
     primaryFactor ??= "Thesis invalidated";
   }
 
-  const shouldExit = isLosing && score >= invalidationThreshold && exitReason !== null;
+  const shouldExit =
+    isLosing &&
+    score >= invalidationThreshold &&
+    exitReason !== null &&
+    (exitReason === "STOP_LOSS_HIT" ||
+      exitReason === "TAKE_PROFIT_HIT" ||
+      exitReason === "EXPIRY_EXIT" ||
+      signals.length >= 2 ||
+      score >= invalidationThreshold + 5 ||
+      (pnlBps <= -earlyLossCutBps && score >= 50));
 
   return {
     shouldExit,
@@ -179,7 +196,159 @@ export function mapLegacyCloseReason(reason: string): PaperExitReason {
       return "TAKE_PROFIT_HIT";
     case "EXPIRED":
       return "EXPIRY_EXIT";
+    case "THESIS_INVALIDATED":
+      return "THESIS_INVALIDATED_EXIT";
     default:
       return reason as PaperExitReason;
   }
+}
+
+export function formatThesisExitLabel(reason: PaperExitReason | null): string {
+  if (reason === "THESIS_INVALIDATED") return "THESIS_INVALIDATED_EXIT";
+  return reason ?? "UNKNOWN";
+}
+
+export type ThesisValidationStatus = "VALID" | "WEAKENING" | "INVALID" | "UNKNOWN_NEEDS_DATA";
+
+export type ThesisHoldRecommendation = "HOLD" | "HOLD_WITH_CAUTION" | "NEEDS_MORE_DATA" | "EXIT";
+
+export interface OpenTradeThesisReview {
+  status: ThesisValidationStatus;
+  recommendation: ThesisHoldRecommendation;
+  reasons: string[];
+  candleData?: ThesisCandleDataStatus;
+}
+
+export interface ThesisCandleDataStatus {
+  available: boolean;
+  candleCount: number;
+  timeframe: string;
+  provider: string | null;
+  missingReason: string | null;
+}
+
+export function buildThesisCandleDataStatus(input: {
+  snapshot?: NormalizedMarketSnapshot | null;
+  hasMarketData: boolean;
+  dataSource?: string | null;
+}): ThesisCandleDataStatus {
+  const candles = input.snapshot?.candles5m ?? [];
+  const count = candles.length;
+  if (input.hasMarketData && count >= 3) {
+    return {
+      available: true,
+      candleCount: count,
+      timeframe: "5m",
+      provider: input.dataSource ?? null,
+      missingReason: null,
+    };
+  }
+  let missingReason = "Insufficient candle data for thesis validation";
+  if (!input.hasMarketData) missingReason = "Market snapshot not loaded for thesis review";
+  else if (count === 0) missingReason = "No 5m candles returned by provider";
+  else if (count < 3) missingReason = `Only ${count} candle(s) available — need at least 3`;
+  return {
+    available: false,
+    candleCount: count,
+    timeframe: "5m",
+    provider: input.dataSource ?? null,
+    missingReason,
+  };
+}
+
+function mapSignalToReason(signal: string): string | null {
+  const lower = signal.toLowerCase();
+  if (lower.includes("momentum")) return "momentum still valid";
+  if (lower.includes("volume")) return "volume supporting";
+  if (lower.includes("spread") && lower.includes("wide")) return "spread acceptable";
+  if (lower.includes("liquidity")) return "liquidity okay";
+  if (lower.includes("failed to continue") || lower.includes("continuation")) {
+    return "price failed to continue";
+  }
+  if (lower.includes("fake") || lower.includes("pump")) return "fake-pump risk";
+  if (lower.includes("volatility") || lower.includes("market risk")) return "broader market risk";
+  return null;
+}
+
+export function evaluateOpenTradeThesisReview(
+  input: ThesisInvalidationInput & { hasMarketData: boolean; dataSource?: string | null },
+): OpenTradeThesisReview {
+  const candleData = buildThesisCandleDataStatus({
+    snapshot: input.snapshot,
+    hasMarketData: input.hasMarketData,
+    dataSource: input.dataSource,
+  });
+
+  if (!input.hasMarketData || input.snapshot.candles5m.length < 3) {
+    return {
+      status: "UNKNOWN_NEEDS_DATA",
+      recommendation: "NEEDS_MORE_DATA",
+      reasons: [candleData.missingReason ?? "Insufficient candle data for thesis validation"],
+      candleData,
+    };
+  }
+
+  const inv = evaluateThesisInvalidation(input);
+  const pnlBps = unrealizedPnlBps(input.side, input.entryPrice, input.markPrice);
+  const momentum = momentumFromCandles(input.snapshot.candles5m);
+  const relVol = input.snapshot.relativeVolume ?? 1;
+  const spreadBps = input.snapshot.ticker.spreadBps ?? 0;
+  const positiveReasons: string[] = [];
+
+  if (Math.abs(momentum) >= 0.1 && pnlBps >= -10) {
+    positiveReasons.push("momentum still valid");
+  }
+  if (relVol >= 0.75) positiveReasons.push("volume supporting");
+  if (spreadBps <= 50) positiveReasons.push("spread acceptable");
+  if (relVol >= 0.5 && spreadBps <= 80) positiveReasons.push("liquidity okay");
+
+  const negativeReasons = inv.signals
+    .map(mapSignalToReason)
+    .filter((r): r is string => r !== null && !positiveReasons.includes(r));
+
+  if (inv.shouldExit && inv.invalidationScore >= 70) {
+    return {
+      status: "INVALID",
+      recommendation: "EXIT",
+      reasons: [...new Set([...inv.signals.slice(0, 3), ...negativeReasons])],
+      candleData,
+    };
+  }
+
+  if (inv.invalidationScore >= 40 || negativeReasons.length >= 2) {
+    return {
+      status: "WEAKENING",
+      recommendation: "HOLD_WITH_CAUTION",
+      reasons: negativeReasons.length > 0 ? negativeReasons : inv.signals.slice(0, 3),
+      candleData,
+    };
+  }
+
+  if (positiveReasons.length >= 2 && inv.invalidationScore < 25) {
+    return {
+      status: "VALID",
+      recommendation: "HOLD",
+      reasons: positiveReasons,
+      candleData,
+    };
+  }
+
+  if (inv.invalidationScore >= 25) {
+    return {
+      status: "UNKNOWN_NEEDS_DATA",
+      recommendation: "HOLD_WITH_CAUTION",
+      reasons:
+        negativeReasons.length > 0
+          ? negativeReasons
+          : ["Thesis signals mixed — monitor closely"],
+      candleData,
+    };
+  }
+
+  return {
+    status: "UNKNOWN_NEEDS_DATA",
+    recommendation: "NEEDS_MORE_DATA",
+    reasons: ["Not enough confirming or invalidating signals yet"],
+    candleData,
+  };
 }

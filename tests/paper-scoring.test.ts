@@ -117,6 +117,7 @@ describe("trade selection quality filter", () => {
       change24hPct: 1,
       momentumPct: 0.01,
       hasExitPlan: true,
+      entryPrice: 100,
     });
     expect(result.shouldOpen).toBe(false);
     expect(result.recommendation).toBe("WATCH");
@@ -133,6 +134,7 @@ describe("trade selection quality filter", () => {
       change24hPct: 5,
       momentumPct: 0.2,
       hasExitPlan: true,
+      entryPrice: 100,
     });
     expect(result.shouldOpen).toBe(false);
     expect(result.reasonCode).toBe("SCORE_TOO_LOW");
@@ -143,12 +145,13 @@ describe("trade selection quality filter", () => {
     const result = evaluateTradeSelection({
       breakdown,
       availability: confirmedAvailability,
-      riskTier: "ALT_LIQUID",
+      riskTier: "MAJOR",
       spreadBps: 15,
       volume24hUsd: 50_000_000,
       change24hPct: 12,
       momentumPct: 0.8,
       hasExitPlan: true,
+      entryPrice: 100,
     });
     expect(result.shouldOpen).toBe(true);
     expect(result.recommendation).toBe("BUY");

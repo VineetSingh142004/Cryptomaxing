@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { NormalizedMarketSnapshot } from "@/lib/trading/data/types";
 import { evaluateConservativePaperStrategy } from "@/lib/trading/paper/conservative-strategy";
 import {
@@ -21,6 +21,7 @@ import {
   sanitizeCandidateErrorMessage,
   toSafeDecimalString,
   DECIMAL_24_12_MAX,
+  DECIMAL_36_12_MAX,
 } from "@/lib/trading/paper/candidate-write";
 import {
   decideCapacityForCandidate,
@@ -478,7 +479,7 @@ describe("candidate write validation", () => {
     }
   });
 
-  it("BTC/USD with trillion market cap stores successfully with marketCap null", () => {
+  it("BTC/USD with trillion market cap stores successfully", () => {
     const result = prepareCandidateWriteData(
       "run1",
       "user1",
@@ -486,8 +487,8 @@ describe("candidate write validation", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.data.marketCap).toBeNull();
-      expect(result.fieldWarnings.marketCap).toContain("exceeds Decimal max");
+      expect(result.data.marketCap).toBe("2000000000000");
+      expect(result.fieldWarnings.marketCap).toBeUndefined();
     }
   });
 
@@ -511,10 +512,10 @@ describe("candidate write validation", () => {
     if (!result.ok) expect(result.fieldErrors.volume24hUsd).toBeDefined();
   });
 
-  it("toSafeDecimalString rejects values exceeding Decimal(24,12)", () => {
-    const r = toSafeDecimalString(2_000_000_000_000, DECIMAL_24_12_MAX, 12);
-    expect(r.decimal).toBeNull();
-    expect(r.warning).toBeDefined();
+  it("toSafeDecimalString accepts trillion market cap with Decimal(36,12) max", () => {
+    const r = toSafeDecimalString(2_000_000_000_000, DECIMAL_36_12_MAX, 12);
+    expect(r.decimal).toBe("2000000000000");
+    expect(r.warning).toBeUndefined();
   });
 
   it("candidate write failure returns clean field-level display message", () => {
@@ -987,5 +988,73 @@ describe("scanner provider status vault mapping", () => {
     expect(panel.providers.find((p) => p.provider === "DEFILLAMA")?.connectionStatusLabel).toBe(
       "READY_PUBLIC_MODE",
     );
+  });
+});
+
+describe("LunarCrush provider status", () => {
+  it("shows disabled by config when LUNARCRUSH_ENABLED is false", async () => {
+    vi.spyOn(await import("@/lib/vault/provider-settings"), "getProviderEnvSettings").mockReturnValue({
+      coingeckoApiKey: undefined,
+      dexscreenerEnabled: true,
+      defillamaEnabled: true,
+      lunarcrushApiKey: undefined,
+      lunarcrushEnabled: false,
+    });
+    const { buildScannerProviderStatus } = await import("@/lib/trading/paper/scanner-provider-status");
+    const lc = buildScannerProviderStatus().providers.find((p) => p.provider === "LUNARCRUSH");
+    expect(lc?.status).toBe("DISABLED");
+    expect(lc?.currentRunReason).toContain("Disabled by config");
+    vi.restoreAllMocks();
+  });
+});
+
+describe("loss analysis and active rules", () => {
+  it("builds active trading rules with safety caps", async () => {
+    const { buildActiveTradingRules } = await import("@/lib/trading/paper/active-trading-rules");
+    const rules = buildActiveTradingRules();
+    expect(rules.liveTradingLocked).toBe(true);
+    expect(rules.groups.some((g) => g.title === "Entry rules")).toBe(true);
+    expect(rules.safetyCaps.some((c) => c.includes("LOCKED"))).toBe(true);
+  });
+
+  it("analyzes losing trades with UNKNOWN when fields missing", async () => {
+    const { analyzeLosingTrades } = await import("@/lib/trading/paper/loss-analysis");
+    const panel = analyzeLosingTrades([
+      {
+        id: "t1",
+        userId: "u",
+        signalId: null,
+        symbol: "PEPE/USD",
+        baseAsset: "PEPE",
+        quoteAsset: "USD",
+        side: "LONG",
+        strategyName: "test",
+        entryPrice: 0.00001 as unknown as { toNumber: () => number },
+        exitPrice: 0.000009 as unknown as { toNumber: () => number },
+        simulatedSize: 1000 as unknown as { toNumber: () => number },
+        plannedStopLoss: 0.0000095 as unknown as { toNumber: () => number },
+        plannedTakeProfit: 0.000012 as unknown as { toNumber: () => number },
+        riskAmount: null,
+        riskPercent: 0.5 as unknown as { toNumber: () => number },
+        status: "CLOSED",
+        openedAt: new Date(),
+        closedAt: new Date(),
+        grossPaperPnl: null,
+        estimatedFees: null,
+        estimatedSlippage: null,
+        netPaperPnl: -1 as unknown as { toNumber: () => number },
+        result: "LOSS",
+        confidence: 0.7 as unknown as { toNumber: () => number },
+        reason: "SCORE_TOO_LOW: weak | closed: STOP_LOSS_HIT",
+        dataSource: "kraken",
+        isRealTrade: false,
+        isVerifiedLivePnl: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ] as import("@prisma/client").PaperTrade[]);
+    expect(panel.losses.length).toBe(1);
+    expect(panel.losses[0]?.exitReason).toBe("STOP_LOSS_HIT");
+    expect(panel.losses[0]?.suggestedFix.length).toBeGreaterThan(0);
   });
 });

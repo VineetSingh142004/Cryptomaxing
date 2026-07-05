@@ -24,6 +24,8 @@ model User {
   paperEvidenceRuns PaperEvidenceRun[]
   paperSignals      PaperSignal[]
   paperForwardTrades PaperTrade[]
+  paperTestBaselines PaperTestBaseline[]
+  paperRecords       PaperRecord[]
 
   @@map("users")
 }
@@ -594,9 +596,45 @@ enum PaperTradeResult {
   NO_TRADE
 }
 
+enum PaperRecordStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model PaperRecord {
+  id                    String            @id @default(cuid())
+  userId                String            @map("user_id")
+  recordNumber          Int               @map("record_number")
+  recordName            String            @map("record_name")
+  strategyVersion       String            @map("strategy_version")
+  startedAt             DateTime          @map("started_at")
+  endedAt               DateTime?         @map("ended_at")
+  status                PaperRecordStatus
+  startingPaperBalance  Decimal           @map("starting_paper_balance") @db.Decimal(24, 12)
+  endingPaperBalance    Decimal?          @map("ending_paper_balance") @db.Decimal(24, 12)
+  startingRealizedPnl   Decimal           @map("starting_realized_pnl") @db.Decimal(24, 12)
+  endingRealizedPnl     Decimal?          @map("ending_realized_pnl") @db.Decimal(24, 12)
+  startingUnrealizedPnl Decimal           @map("starting_unrealized_pnl") @db.Decimal(24, 12)
+  endingUnrealizedPnl   Decimal?          @map("ending_unrealized_pnl") @db.Decimal(24, 12)
+  startingTradeCount    Int               @map("starting_trade_count")
+  endingTradeCount      Int?              @map("ending_trade_count")
+  notes                 String?
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, recordNumber])
+  @@index([userId, status])
+  @@index([userId, startedAt])
+  @@map("paper_records")
+}
+
 model PaperEvidenceRun {
   id                      String    @id @default(cuid())
   userId                  String    @map("user_id")
+  recordId                String?   @map("record_id")
+  strategyVersion         String    @default("legacy") @map("strategy_version")
   status                  String
   symbols                 String[]
   marketDataReady         Boolean   @default(false) @map("market_data_ready")
@@ -643,6 +681,7 @@ model PaperEvidenceRun {
   rotationEvents      PaperRotationEvent[]
 
   @@index([userId, startedAt])
+  @@index([userId, recordId])
   @@map("paper_evidence_runs")
 }
 
@@ -650,6 +689,8 @@ model PaperSignal {
   id           String         @id @default(cuid())
   runId        String         @map("run_id")
   userId       String         @map("user_id")
+  recordId     String?        @map("record_id")
+  strategyVersion String      @default("legacy") @map("strategy_version")
   symbol       String
   side         PaperTradeSide
   strategyName String         @map("strategy_name")
@@ -672,6 +713,8 @@ model PaperTrade {
   id                String           @id @default(cuid())
   userId            String           @map("user_id")
   signalId          String?          @unique @map("signal_id")
+  recordId          String?          @map("record_id")
+  strategyVersion   String           @default("legacy") @map("strategy_version")
   symbol            String
   baseAsset         String           @map("base_asset")
   quoteAsset        String           @map("quote_asset")
@@ -693,12 +736,14 @@ model PaperTrade {
   netPaperPnl       Decimal?         @map("net_paper_pnl") @db.Decimal(24, 12)
   result            PaperTradeResult
   confidence        Decimal?         @db.Decimal(8, 6)
-  reason            String
-  dataSource        String           @default("kraken") @map("data_source")
-  isRealTrade       Boolean          @default(false) @map("is_real_trade")
-  isVerifiedLivePnl Boolean          @default(false) @map("is_verified_live_pnl")
-  createdAt         DateTime         @default(now()) @map("created_at")
-  updatedAt         DateTime         @updatedAt @map("updated_at")
+  reason                         String
+  carriedAt                      DateTime? @map("carried_at")
+  carriedBaselineUnrealizedPnl   Decimal?  @map("carried_baseline_unrealized_pnl") @db.Decimal(24, 12)
+  dataSource                     String    @default("kraken") @map("data_source")
+  isRealTrade                    Boolean   @default(false) @map("is_real_trade")
+  isVerifiedLivePnl              Boolean   @default(false) @map("is_verified_live_pnl")
+  createdAt                      DateTime  @default(now()) @map("created_at")
+  updatedAt                      DateTime  @updatedAt @map("updated_at")
 
   user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   signal    PaperSignal?         @relation(fields: [signalId], references: [id])
@@ -706,12 +751,15 @@ model PaperTrade {
 
   @@index([userId, status])
   @@index([userId, openedAt])
+  @@index([userId, recordId])
   @@map("paper_forward_trades")
 }
 
 model PaperTradeSnapshot {
   id            String   @id @default(cuid())
   tradeId       String   @map("trade_id")
+  recordId      String?  @map("record_id")
+  strategyVersion String @default("legacy") @map("strategy_version")
   markPrice     Decimal  @map("mark_price") @db.Decimal(24, 12)
   unrealizedPnl Decimal? @map("unrealized_pnl") @db.Decimal(24, 12)
   capturedAt    DateTime @map("captured_at")
@@ -727,6 +775,8 @@ model PaperScanCandidate {
   id                           String   @id @default(cuid())
   runId                        String   @map("run_id")
   userId                       String   @map("user_id")
+  recordId                     String?  @map("record_id")
+  strategyVersion              String   @default("legacy") @map("strategy_version")
   symbol                       String
   source                       String   @default("kraken")
   exchange                     String   @default("kraken")
@@ -734,7 +784,7 @@ model PaperScanCandidate {
   spreadBps                    Decimal? @map("spread_bps") @db.Decimal(12, 6)
   volume24hUsd                 Decimal? @map("volume_24h_usd") @db.Decimal(24, 12)
   change24hPct                 Decimal? @map("change_24h_pct") @db.Decimal(12, 6)
-  marketCap                    Decimal? @map("market_cap") @db.Decimal(24, 12)
+  marketCap                    Decimal? @map("market_cap") @db.Decimal(36, 12)
   riskTier                     String?  @map("risk_tier")
   momentumScore                Decimal? @map("momentum_score") @db.Decimal(12, 6)
   volumeSpikeScore             Decimal? @map("volume_spike_score") @db.Decimal(12, 6)
@@ -806,6 +856,28 @@ model PaperRotationEvent {
   @@index([runId])
   @@index([userId, createdAt])
   @@map("paper_rotation_events")
+}
+
+model PaperTestBaseline {
+  id                    String   @id @default(cuid())
+  userId                String   @map("user_id")
+  strategyVersion       String   @map("strategy_version")
+  startedAt             DateTime @map("started_at")
+  startingPaperBalance  Decimal  @map("starting_paper_balance") @db.Decimal(24, 12)
+  startingRealizedPnl   Decimal  @map("starting_realized_pnl") @db.Decimal(24, 12)
+  startingUnrealizedPnl Decimal  @map("starting_unrealized_pnl") @db.Decimal(24, 12)
+  startingTradeCount    Int      @map("starting_trade_count")
+  startingClosedCount   Int      @default(0) @map("starting_closed_count")
+  startingOpenCount     Int      @default(0) @map("starting_open_count")
+  notes                 String?
+  isActive              Boolean  @default(true) @map("is_active")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([userId, startedAt])
+  @@map("paper_test_baselines")
 }
 
 model TradeCard {

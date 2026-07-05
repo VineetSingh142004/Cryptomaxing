@@ -58,7 +58,8 @@ export async function GET() {
       } catch {
         scannerVaultConnections = [];
       }
-    } catch {
+    } catch (paperErr) {
+      logger.error({ err: paperErr }, "getPaperStatus failed — paper_evidence omitted from dashboard");
       paperEvidence = null;
     }
 

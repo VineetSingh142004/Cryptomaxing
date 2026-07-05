@@ -77,16 +77,65 @@ import { verifyPaperSafetyGates } from "@/lib/trading/paper/safety-verification"
 import {
   evaluateThesisInvalidation,
   mapLegacyCloseReason,
+  formatThesisExitLabel,
   type PaperExitReason,
 } from "@/lib/trading/paper/thesis-invalidation";
 import { explainLosingTrade } from "@/lib/trading/paper/risk-explanation";
-import { PAPER_RISK_CONFIG } from "@/lib/trading/paper/paper-risk-config";
+import { PAPER_RISK_CONFIG, serializePaperRiskConfig } from "@/lib/trading/paper/paper-risk-config";
+import { buildActiveTradingRules } from "@/lib/trading/paper/active-trading-rules";
+import { analyzeLosingTrades, buildTradeLossAuditReport } from "@/lib/trading/paper/loss-analysis";
+import { DATA_TRUTH } from "@/lib/trading/paper/data-truth";
 import {
   resolveEffectiveMaxOpenTrades,
   countCorrelatedTrades,
 } from "@/lib/trading/paper/dynamic-capacity";
+import {
+  buildPaperPerformanceSummary,
+  computePortfolioSnapshot,
+  computeRunPnlDelta,
+  buildDeepEvaluationExplanation,
+} from "@/lib/trading/paper/performance-summary";
+import {
+  buildProfitQualitySummary,
+  diagnoseTradeHistory,
+  evaluateRecordCautionMode,
+  noTradeBestDecisionMessage,
+} from "@/lib/trading/paper/profit-protection";
+import {
+  mapCandidateRecommendationLabel,
+  mapCandidateRunDisplayLabel,
+  mapPaperRunActionToExecution,
+  summarizeRejectionCategories,
+} from "@/lib/trading/paper/paper-labels";
+import { CURRENT_PAPER_STRATEGY_VERSION } from "@/lib/trading/paper/paper-strategy-version";
+import { computeOpenExposureMetrics } from "@/lib/trading/paper/exposure-metrics";
+import {
+  buildCarriedTradeSnapshots,
+  buildRecordActivityFeed,
+  buildRecordBotHealthCheck,
+  buildRecordComparison,
+  buildRecordHistoryRows,
+  buildRecordMetrics,
+  buildRecordScopedCandidateWhere,
+  buildRecordScopedRunWhere,
+  ensurePaperRecords,
+  getActivePaperRecord,
+  isCarriedTrade,
+  recordHeading,
+  serializePaperRecord,
+  splitRecordTrades,
+  sumRecordRejectionCounts,
+  type RecordScopedEntity,
+} from "@/lib/trading/paper/paper-record";
+import { evaluateOpenTradeThesisReview } from "@/lib/trading/paper/thesis-invalidation";
 
 export type PaperRunAction =
+  | "PAPER_TRADE_OPENED"
+  | "PAPER_TRADE_UPDATED"
+  | "PAPER_TRADE_CLOSED"
+  | "PAPER_TRADE_SKIPPED_MAX_OPEN"
+  | "PAPER_TRADE_SKIPPED_NO_SLOT"
+  | "PAPER_TRADE_SKIPPED_RISK"
   | "TRADE_OPENED"
   | "TRADE_UPDATED"
   | "TRADE_CLOSED"
@@ -113,6 +162,100 @@ function toNumber(value: { toNumber?: () => number } | number | null | undefined
   if (typeof value === "number") return value;
   if (typeof value.toNumber === "function") return value.toNumber();
   return Number(value);
+}
+
+async function resolveLatestRunPnlFromDb(
+  userId: string,
+  run: { startedAt: Date; completedAt: Date | null },
+  scanSummary: Record<string, unknown>,
+): Promise<{
+  realizedPnlThisRun: number | null;
+  unrealizedPnlChangeThisRun: number | null;
+  netChangeThisRun: number | null;
+  pnlSource: "scan_summary" | "computed_from_snapshots" | "unavailable";
+}> {
+  const existingRealized = toNumber(scanSummary.realizedPnlThisRun as never);
+  const existingUnrealized = toNumber(scanSummary.unrealizedPnlChangeThisRun as never);
+  const existingNet =
+    toNumber(scanSummary.currentRunPnlDelta as never) ??
+    toNumber(scanSummary.netPnlDeltaThisRun as never);
+  if (
+    existingRealized !== null &&
+    existingUnrealized !== null &&
+    existingNet !== null
+  ) {
+    return {
+      realizedPnlThisRun: existingRealized,
+      unrealizedPnlChangeThisRun: existingUnrealized,
+      netChangeThisRun: existingNet,
+      pnlSource: "scan_summary",
+    };
+  }
+
+  const runEnd = run.completedAt ?? run.startedAt;
+  const allTrades = await prisma.paperTrade.findMany({ where: { userId } });
+  const snapsBefore = await prisma.paperTradeSnapshot.findMany({
+    where: { trade: { userId }, capturedAt: { lt: run.startedAt } },
+    orderBy: { capturedAt: "desc" },
+  });
+  const marksBefore = new Map<string, number>();
+  for (const snap of snapsBefore) {
+    if (!marksBefore.has(snap.tradeId)) {
+      const mark = toNumber(snap.markPrice);
+      if (mark !== null) marksBefore.set(snap.tradeId, mark);
+    }
+  }
+  for (const trade of allTrades) {
+    if (trade.status === "OPEN" && !marksBefore.has(trade.id)) {
+      const mark = toNumber(trade.entryPrice);
+      if (mark !== null) marksBefore.set(trade.id, mark);
+    }
+  }
+
+  const snapsDuring = await prisma.paperTradeSnapshot.findMany({
+    where: {
+      trade: { userId },
+      capturedAt: { gte: run.startedAt, lte: runEnd },
+    },
+    orderBy: { capturedAt: "desc" },
+  });
+  const marksAfter = new Map(marksBefore);
+  for (const snap of snapsDuring) {
+    const mark = toNumber(snap.markPrice);
+    if (mark !== null) marksAfter.set(snap.tradeId, mark);
+  }
+  const openWithSnaps = await prisma.paperTrade.findMany({
+    where: { userId, status: "OPEN" },
+    include: { snapshots: { orderBy: { capturedAt: "desc" }, take: 1 } },
+  });
+  for (const trade of openWithSnaps) {
+    const snap = trade.snapshots[0];
+    if (snap && snap.capturedAt >= run.startedAt && snap.capturedAt <= runEnd) {
+      const mark = toNumber(snap.markPrice);
+      if (mark !== null) marksAfter.set(trade.id, mark);
+    }
+  }
+
+  const portfolioBefore = computePortfolioSnapshot(allTrades, marksBefore);
+  const portfolioAfter = computePortfolioSnapshot(allTrades, marksAfter);
+  const closedThisRun = allTrades.filter(
+    (t) =>
+      (t.status === "CLOSED" || t.status === "EXPIRED") &&
+      t.closedAt &&
+      t.closedAt >= run.startedAt &&
+      t.closedAt <= runEnd,
+  );
+  const realizedPnlThisRun = closedThisRun.reduce(
+    (sum, t) => sum + (toNumber(t.netPaperPnl) ?? 0),
+    0,
+  );
+  const runPnlDelta = computeRunPnlDelta(portfolioBefore, portfolioAfter, realizedPnlThisRun);
+  return {
+    realizedPnlThisRun: runPnlDelta.realizedPnlThisRun,
+    unrealizedPnlChangeThisRun: runPnlDelta.unrealizedPnlChangeThisRun,
+    netChangeThisRun: runPnlDelta.netPnlDeltaThisRun,
+    pnlSource: "computed_from_snapshots",
+  };
 }
 
 function parseSymbol(symbol: string): { baseAsset: string; quoteAsset: string } {
@@ -184,6 +327,8 @@ async function updateOpenTrade(
     await prisma.paperTradeSnapshot.create({
       data: {
         tradeId: trade.id,
+        recordId: trade.recordId,
+        strategyVersion: trade.strategyVersion ?? CURRENT_PAPER_STRATEGY_VERSION,
         markPrice,
         unrealizedPnl: unrealized,
         capturedAt: now,
@@ -302,8 +447,8 @@ async function updateOpenTrade(
             : classifyResult(pnl.net);
 
   const closeNote = riskExplanation
-    ? `${trade.reason} | closed: ${closeReason} | risk: ${riskExplanation}`
-    : `${trade.reason} | closed: ${closeReason}`;
+    ? `${trade.reason} | closed: ${formatThesisExitLabel(closeReason === "TRADE_UPDATED" ? null : closeReason)} | risk: ${riskExplanation}`
+    : `${trade.reason} | closed: ${formatThesisExitLabel(closeReason === "TRADE_UPDATED" ? null : closeReason)}`;
 
   const updated = await prisma.paperTrade.update({
     where: { id: trade.id },
@@ -325,14 +470,30 @@ async function updateOpenTrade(
   return { action: "TRADE_CLOSED", trade: updated, snapshotStored: true, exitReason: mappedReason };
 }
 
-async function getPaperEvidenceCountSnapshot(userId: string): Promise<PaperEvidenceCountSnapshot> {
+async function getPaperEvidenceCountSnapshot(
+  userId: string,
+  record?: RecordScopedEntity,
+): Promise<PaperEvidenceCountSnapshot> {
+  const runWhere = record ? buildRecordScopedRunWhere(userId, record) : { userId };
+  const candidateWhere = record ? buildRecordScopedCandidateWhere(userId, record) : { run: { userId } };
+  const signalWhere = record
+    ? {
+        userId,
+        OR: [{ recordId: record.id }, { recordId: null, createdAt: { gte: record.startedAt } }],
+      }
+    : { userId };
+  const snapshotWhere = record
+    ? {
+        OR: [{ recordId: record.id }, { recordId: null, capturedAt: { gte: record.startedAt } }],
+        trade: { userId },
+      }
+    : { trade: { userId } };
+
   const [paperRuns, candidatesStored, signalsStored, snapshotsStored] = await Promise.all([
-    prisma.paperEvidenceRun.count({ where: { userId } }),
-    prisma.paperScanCandidate.count({ where: { run: { userId } } }),
-    prisma.paperSignal.count({ where: { userId } }),
-    prisma.paperTradeSnapshot.count({
-      where: { trade: { userId } },
-    }),
+    prisma.paperEvidenceRun.count({ where: runWhere }),
+    prisma.paperScanCandidate.count({ where: candidateWhere }),
+    prisma.paperSignal.count({ where: signalWhere }),
+    prisma.paperTradeSnapshot.count({ where: snapshotWhere }),
   ]);
   return { paperRuns, candidatesStored, signalsStored, snapshotsStored };
 }
@@ -340,6 +501,7 @@ async function getPaperEvidenceCountSnapshot(userId: string): Promise<PaperEvide
 async function storeCandidateSafe(
   runId: string,
   userId: string,
+  recordId: string,
   c: ScanCandidate,
 ): Promise<{
   ok: boolean;
@@ -350,7 +512,7 @@ async function storeCandidateSafe(
   fieldWarnings?: Record<string, string>;
 }> {
   try {
-    const prepared = prepareCandidateWriteData(runId, userId, c);
+    const prepared = prepareCandidateWriteData(runId, userId, c, recordId);
     if (!prepared.ok) {
       return {
         ok: false,
@@ -430,6 +592,8 @@ async function closeTradeForRotation(
     await prisma.paperTradeSnapshot.create({
       data: {
         tradeId: trade.id,
+        recordId: trade.recordId,
+        strategyVersion: trade.strategyVersion ?? CURRENT_PAPER_STRATEGY_VERSION,
         markPrice,
         unrealizedPnl: unrealized,
         capturedAt: now,
@@ -510,7 +674,28 @@ function dedupeBySymbol<T extends { symbol: string }>(items: T[]): T[] {
   return out;
 }
 
-function serializeCandidate(c: ScanCandidate) {
+function serializeCandidate(
+  c: ScanCandidate,
+  tradeReadyNotOpened = false,
+  tradesOpenedThisRun = 0,
+) {
+  const recommendationLabel = mapCandidateRecommendationLabel({
+    action: c.action,
+    actionType: c.actionType,
+    reasonCode: c.reasonCode,
+    tradableOnConfiguredExchange: c.tradableOnConfiguredExchange,
+    tradeReadyButNotOpened: tradeReadyNotOpened,
+  });
+  const runDisplayLabel = mapCandidateRunDisplayLabel({
+    action: c.action,
+    actionType: c.actionType,
+    reasonCode: c.reasonCode,
+    tradesOpenedThisRun,
+    openedThisRun:
+      !tradeReadyNotOpened &&
+      tradesOpenedThisRun > 0 &&
+      (c.action === "OPEN_TRADE" || c.actionType === "OPEN_PAPER_TRADE"),
+  });
   return {
     symbol: c.symbol,
     coinName: c.coinName,
@@ -533,13 +718,15 @@ function serializeCandidate(c: ScanCandidate) {
     actionType: c.actionType,
     reasonCode: c.reasonCode,
     reasonText: c.reasonText,
+    recommendationLabel,
+    runDisplayLabel,
     rank: c.rank,
   };
 }
 
-export async function getLastRunScannerSummary(userId: string) {
+export async function getLastRunScannerSummary(userId: string, record?: RecordScopedEntity) {
   const lastRun = await prisma.paperEvidenceRun.findFirst({
-    where: { userId },
+    where: record ? buildRecordScopedRunWhere(userId, record) : { userId },
     orderBy: { startedAt: "desc" },
     include: {
       candidates: { orderBy: { opportunityScore: "desc" }, take: 50 },
@@ -566,7 +753,15 @@ export async function getLastRunScannerSummary(userId: string) {
     reasonCode: c.reasonCode,
   }));
 
-  const topCandidates = dedupeBySymbol(allCandidates).slice(0, 5);
+  const tradesOpenedThisRun = lastRun.tradesOpened ?? 0;
+  const topCandidates = dedupeBySymbol(allCandidates).slice(0, 5).map((c) => ({
+    ...c,
+    runDisplayLabel: mapCandidateRunDisplayLabel({
+      action: c.action,
+      reasonCode: c.reasonCode,
+      tradesOpenedThisRun,
+    }),
+  }));
   const highVolatilityOpportunities = dedupeBySymbol(
     allCandidates.filter(
       (c) => c.riskTier === "HIGH_VOLATILITY" || c.riskTier === "EXTREME_RISK",
@@ -680,6 +875,7 @@ export async function getLastRunScannerSummary(userId: string) {
     rejectedExamples,
     topCandidates,
     rejectionSummary,
+    rejectionCategories: summarizeRejectionCategories(rejectionSummary),
     pipeline: (summary.pipeline as Record<string, unknown>) ?? null,
     finalCandidateOutputs:
       (summary.finalCandidateOutputs as typeof finalCandidateOutputs) ?? finalCandidateOutputs,
@@ -698,7 +894,9 @@ export async function getLastRunScannerSummary(userId: string) {
   };
 }
 
-export async function getPaperEvidenceStats(userId: string) {
+export async function getPaperEvidenceStats(userId: string, record?: RecordScopedEntity) {
+  const tradeWhere = record ? { userId, recordId: record.id } : { userId };
+  const runWhere = record ? buildRecordScopedRunWhere(userId, record) : { userId };
   const [
     countSnapshot,
     totalTrades,
@@ -708,16 +906,24 @@ export async function getPaperEvidenceStats(userId: string) {
     missedOpportunitiesTotal,
     runs,
   ] = await Promise.all([
-    getPaperEvidenceCountSnapshot(userId),
-    prisma.paperTrade.count({ where: { userId } }),
-    prisma.paperTrade.count({ where: { userId, status: "OPEN" } }),
+    getPaperEvidenceCountSnapshot(userId, record),
+    prisma.paperTrade.count({ where: tradeWhere }),
+    prisma.paperTrade.count({ where: { ...tradeWhere, status: "OPEN" } }),
     prisma.paperTrade.count({
-      where: { userId, status: { in: ["CLOSED", "EXPIRED"] } },
+      where: { ...tradeWhere, status: { in: ["CLOSED", "EXPIRED"] } },
     }),
-    prisma.paperSignal.count({ where: { userId, noTrade: true } }),
+    prisma.paperSignal.count({
+      where: record
+        ? {
+            userId,
+            noTrade: true,
+            OR: [{ recordId: record.id }, { recordId: null, createdAt: { gte: record.startedAt } }],
+          }
+        : { userId, noTrade: true },
+    }),
     prisma.paperMissedOpportunity.count({ where: { userId } }),
     prisma.paperEvidenceRun.findMany({
-      where: { userId },
+      where: runWhere,
       orderBy: { startedAt: "asc" },
       select: { startedAt: true, errorCount: true },
     }),
@@ -727,7 +933,10 @@ export async function getPaperEvidenceStats(userId: string) {
   const paperEvidenceCountTotal = computePaperEvidenceCountTotal(countSnapshot);
 
   const closed = await prisma.paperTrade.findMany({
-    where: { userId, status: { in: ["CLOSED", "EXPIRED"] } },
+    where: {
+      ...(record ? { userId, recordId: record.id } : { userId }),
+      status: { in: ["CLOSED", "EXPIRED"] },
+    },
     select: { netPaperPnl: true, result: true, closedAt: true },
   });
 
@@ -851,14 +1060,87 @@ export async function getOpenTradesCapacityDetail(userId: string) {
   });
 
   const openCount = openTrades.length;
-  const availableSlots = Math.max(0, maxOpenTrades - openCount);
+  const dailyBudgetUsd =
+    PAPER_RISK_CONFIG.manualDailyBudgetUsd > 0
+      ? PAPER_RISK_CONFIG.manualDailyBudgetUsd
+      : SCANNER_CONFIG.simulatedAccountUsd;
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const todayClosed = await prisma.paperTrade.findMany({
+    where: {
+      userId,
+      status: { in: ["CLOSED", "EXPIRED"] },
+      closedAt: { gte: todayStart },
+    },
+    select: { netPaperPnl: true },
+  });
+  const riskUsedTodayUsd = todayClosed.reduce(
+    (s, t) => s + Math.abs(Math.min(0, toNumber(t.netPaperPnl) ?? 0)),
+    0,
+  );
+
+  const exposureMetrics = computeOpenExposureMetrics({
+    openTrades: openTradesRaw,
+    accountUsd: SCANNER_CONFIG.simulatedAccountUsd,
+    riskUsedTodayUsd,
+    dailyBudgetUsd,
+  });
+
+  const avgConf =
+    openTradesRaw.length > 0
+      ? openTradesRaw.reduce((s, t) => s + (toNumber(t.confidence) ?? 0.5), 0) / openTradesRaw.length
+      : 0.7;
+
+  const capacityState = resolveEffectiveMaxOpenTrades({
+    openTradeCount: openCount,
+    totalExposurePct: exposureMetrics.riskAtStopPct,
+    averageConfidence: avgConf,
+    highQualityOpportunityCount: [...scoreBySymbol.values()].filter((s) => s >= 75).length,
+  });
+  const effectiveMax = capacityState.effectiveMaxOpenTrades;
+  const availableSlots = capacityState.slotsAvailable;
 
   return {
-    maxOpenTrades,
+    maxOpenTrades: effectiveMax,
+    fixedMaxOpenTrades: maxOpenTrades,
+    baseMaxOpenTrades: maxOpenTrades,
+    effectiveMaxOpenTrades: effectiveMax,
+    dynamicMaxOpenTrades: effectiveMax,
+    dynamicModeEnabled: capacityState.dynamicModeEnabled,
+    capacityFactors: capacityState.factors,
+    totalExposurePct: exposureMetrics.capitalExposurePct,
+    capitalExposurePct: exposureMetrics.capitalExposurePct,
+    riskAtStopPct: exposureMetrics.riskAtStopPct,
+    currentExposureUsd: exposureMetrics.capitalExposureUsd,
+    riskAtStopUsd: exposureMetrics.riskAtStopUsd,
+    maxTotalExposurePct: exposureMetrics.maxAllowedRiskAtStopPct,
+    maxAllowedRiskAtStopPct: exposureMetrics.maxAllowedRiskAtStopPct,
+    maxAllowedDailyRiskPct: exposureMetrics.maxAllowedDailyRiskPct,
+    exposureAuditNote: exposureMetrics.auditNote,
+    dailyRiskBudgetUsd: dailyBudgetUsd,
+    dailyRiskBudgetPct: PAPER_RISK_CONFIG.maxDailyLossPercent,
+    riskUsedTodayUsd,
+    riskUsedTodayPct: exposureMetrics.dailyRiskUsedPct,
+    capacityLimitedBy:
+      capacityState.blockedReason?.includes("EXPOSURE")
+        ? "risk_at_stop"
+        : capacityState.blockedReason?.includes("CORRELATED")
+          ? "correlation"
+          : capacityState.blockedReason?.includes("CAPACITY")
+            ? "trade_count"
+            : exposureMetrics.riskAtStopPct >= PAPER_RISK_CONFIG.maxTotalExposurePercent
+              ? "risk_at_stop"
+              : availableSlots === 0
+                ? "trade_count"
+                : null,
+    newTradeAllowedReason:
+      availableSlots > 0
+        ? "Capacity available — new paper trade may open if candidate passes filters."
+        : capacityState.blockedReason ?? "MAX_OPEN_TRADES_REACHED",
     openTrades: openCount,
     availableSlots,
-    newTradeOpening: openCount >= maxOpenTrades ? ("BLOCKED" as const) : ("ALLOWED" as const),
-    maxOpenTradesBlockReason: openCount >= maxOpenTrades ? "MAX_OPEN_TRADES_REACHED" : null,
+    newTradeOpening: availableSlots > 0 ? ("ALLOWED" as const) : ("BLOCKED" as const),
+    maxOpenTradesBlockReason: capacityState.blockedReason,
     rotationEnabled: PAPER_ROTATION_CONFIG.enabled,
     rotationMode: PAPER_ROTATION_CONFIG.mode,
     rotationWarning: rotationWarning(),
@@ -974,21 +1256,54 @@ export async function getMissedOpportunitiesSummary(userId: string, runId?: stri
   };
 }
 
+export const DEFAULT_DASHBOARD_VIEW = "current_record" as const;
+
 export async function getPaperStatus() {
   const userId = await resolvePaperUserId();
+  const activeRecord = await ensurePaperRecords(userId);
+  const recordScope: RecordScopedEntity = { id: activeRecord.id, startedAt: activeRecord.startedAt };
+  const recordId = activeRecord.id;
   const marketData = getMarketDataProviderStatus();
   const stats = await getPaperEvidenceStats(userId);
-  const scanner = await getLastRunScannerSummary(userId);
+  const recordStats = await getPaperEvidenceStats(userId, recordScope);
+  const allTimeScanner = await getLastRunScannerSummary(userId);
+  const recordScanner = await getLastRunScannerSummary(userId, recordScope);
   const modelAccess = await confirmPaperModelsAccessible();
   const latestRun = await prisma.paperEvidenceRun.findFirst({
-    where: { userId },
+    where: buildRecordScopedRunWhere(userId, recordScope),
     orderBy: { startedAt: "desc" },
     select: {
+      id: true,
       status: true,
       reasonCode: true,
+      reasonText: true,
       candidatesStored: true,
       snapshotsStored: true,
       signalsStored: true,
+      tradesOpened: true,
+      tradesUpdated: true,
+      tradesClosed: true,
+      coinsDiscovered: true,
+      coinsEvaluated: true,
+      startedAt: true,
+      completedAt: true,
+      scanSummary: true,
+      actions: true,
+    },
+  });
+  const recordScopedRuns = await prisma.paperEvidenceRun.findMany({
+    where: buildRecordScopedRunWhere(userId, recordScope),
+    orderBy: { startedAt: "desc" },
+    take: 20,
+    select: {
+      startedAt: true,
+      status: true,
+      reasonCode: true,
+      tradesOpened: true,
+      tradesUpdated: true,
+      tradesClosed: true,
+      scanSummary: true,
+      candidatesStored: true,
     },
   });
   const recentWritesSucceeded =
@@ -1003,20 +1318,289 @@ export async function getPaperStatus() {
   const missed = await getMissedOpportunitiesSummary(userId);
   const rotation = await getRotationSummary(userId);
   const tradeHistory = await getPaperTradeHistory(userId);
+  const allUserTrades = await prisma.paperTrade.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+  const allTrades = await prisma.paperTrade.findMany({
+    where: { userId, recordId },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+  const { carried, newTrades } = splitRecordTrades(allTrades);
+  const recordNewTradeHistory = buildPaperTradeHistory(
+    newTrades.filter((t) => t.status !== "NO_TRADE" && t.side !== "NO_TRADE"),
+  );
+  const candidateScoreMap = new Map(
+    (await prisma.paperScanCandidate.findMany({
+      where: { userId, recordId },
+      orderBy: { createdAt: "desc" },
+      take: 500,
+      select: { symbol: true, opportunityScore: true },
+    })).map((c) => [c.symbol, toNumber(c.opportunityScore) ?? 0]),
+  );
+  const markMap = new Map<string, number>();
+  const openTradesForMarks = await prisma.paperTrade.findMany({
+    where: { userId, status: "OPEN", recordId },
+    include: { snapshots: { orderBy: { capturedAt: "desc" }, take: 1 } },
+  });
+  for (const t of openTradesForMarks) {
+    const snap = t.snapshots[0];
+    const mark = snap ? toNumber(snap.markPrice) : toNumber(t.entryPrice);
+    if (mark !== null) markMap.set(t.id, mark);
+  }
+  const performanceSummary = buildPaperPerformanceSummary({
+    trades: allTrades,
+    latestMarkByTradeId: markMap,
+    maxDrawdown: stats.maxDrawdown,
+  });
+  const recordMetrics = await buildRecordMetrics({
+    record: activeRecord,
+    trades: allTrades,
+    allTrades: allUserTrades,
+    latestMarkByTradeId: markMap,
+    latestRunAt: latestRun?.startedAt ?? null,
+  });
+  const carriedOpenTradesDetail = buildCarriedTradeSnapshots(allTrades, markMap);
+  const recordActivityCounts = {
+    runsCompletedInRecord: recordScopedRuns.filter((r) => r.status === "COMPLETED").length,
+    tradesUpdatedInRecord: recordScopedRuns.reduce((sum, r) => sum + (r.tradesUpdated ?? 0), 0),
+    candidatesScannedInRecord: recordStats.candidatesStored,
+    rejectionsInRecord: sumRecordRejectionCounts(recordScopedRuns),
+    newTradesOpenedInRecord: recordMetrics.newTradesOpened,
+    carriedTradesMonitored: recordMetrics.carriedOpenTrades,
+  };
+  const recordActivityFeed = buildRecordActivityFeed(recordScopedRuns, 10);
+  const botHealthCheck = buildRecordBotHealthCheck({
+    latestRun: latestRun
+      ? {
+          startedAt: latestRun.startedAt,
+          status: latestRun.status,
+          reasonCode: latestRun.reasonCode,
+          tradesUpdated: latestRun.tradesUpdated,
+          candidatesStored: latestRun.candidatesStored,
+          coinsDiscovered: latestRun.coinsDiscovered,
+        }
+      : null,
+    activityCounts: recordActivityCounts,
+  });
+  const recordOpenTrades = await Promise.all(
+    [...newTrades, ...carried]
+      .filter((t) => t.status === "OPEN")
+      .map(async (trade) => {
+        const snap = openTradesForMarks.find((t) => t.id === trade.id)?.snapshots[0];
+        const entry = toNumber(trade.entryPrice) ?? 0;
+        const mark = snap ? toNumber(snap.markPrice) : entry;
+        const tp = toNumber(trade.plannedTakeProfit);
+        const sl = toNumber(trade.plannedStopLoss);
+        const spreadMatch = trade.reason?.match(/spread:\s*([\d.]+)/i);
+        const entrySpreadBps = spreadMatch ? parseFloat(spreadMatch[1]) : null;
+        const carriedSnapshot = carriedOpenTradesDetail.find((c) => c.tradeId === trade.id);
+
+        let thesisSnapshot: NormalizedMarketSnapshot | null = null;
+        try {
+          thesisSnapshot = await getMarketSnapshot(trade.symbol);
+        } catch {
+          thesisSnapshot = null;
+        }
+
+        const reviewSnapshot: NormalizedMarketSnapshot =
+          thesisSnapshot ??
+          ({
+            symbol: trade.symbol,
+            ticker: { last: mark, bid: mark, ask: mark, spreadBps: entrySpreadBps ?? 0 },
+            candles5m: [],
+            relativeVolume: 1,
+          } as NormalizedMarketSnapshot);
+
+        const thesisReview =
+          entry && mark
+            ? evaluateOpenTradeThesisReview({
+                side: trade.side,
+                entryPrice: entry,
+                markPrice: mark,
+                snapshot: reviewSnapshot,
+                entrySpreadBps,
+                hasMarketData:
+                  thesisSnapshot !== null && thesisSnapshot.candles5m.length >= 3,
+                dataSource: thesisSnapshot?.source ?? "kraken",
+              })
+            : {
+                status: "UNKNOWN_NEEDS_DATA" as const,
+                recommendation: "NEEDS_MORE_DATA" as const,
+                reasons: ["Missing entry or mark price"],
+                candleData: {
+                  available: false,
+                  candleCount: 0,
+                  timeframe: "5m",
+                  provider: null,
+                  missingReason: "Missing entry or mark price",
+                },
+              };
+
+        const allTimePnl =
+          snap && toNumber(snap.unrealizedPnl) !== null
+            ? toNumber(snap.unrealizedPnl)
+            : carriedSnapshot?.allTimeUnrealizedPnl ?? null;
+        return {
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          side: trade.side,
+          isCarried: isCarriedTrade(trade),
+          entryPrice: entry,
+          currentPrice: mark,
+          allTimePnl,
+          recordPnlDisplay: isCarriedTrade(trade)
+            ? carriedSnapshot?.pnlSinceCarryDisplay ?? "UNKNOWN"
+            : allTimePnl !== null
+              ? allTimePnl.toFixed(4)
+              : "UNKNOWN",
+          distanceToTpPct:
+            entry && tp && mark ? (((tp - mark) / entry) * 100).toFixed(2) : null,
+          distanceToSlPct:
+            entry && sl && mark ? (((mark - sl) / entry) * 100).toFixed(2) : null,
+          thesisStatus: thesisReview.status,
+          recommendation: thesisReview.recommendation,
+          reasons: thesisReview.reasons,
+          candleData: thesisReview.candleData,
+          simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+        };
+      }),
+  );
+  const recordHistory = await buildRecordHistoryRows(userId);
+  const recordComparison = buildRecordComparison(recordHistory);
+  const archivedRecords = recordHistory.filter((r) => r.status === "ARCHIVED");
+  const profitQuality = buildProfitQualitySummary(recordMetrics, {
+    performanceScope: "baseline",
+  });
+  const historyDiagnostic = diagnoseTradeHistory(allTrades);
+  const lossAnalysis = analyzeLosingTrades(allTrades, {
+    candidateScores: candidateScoreMap,
+    averageWinningTrade: performanceSummary.averageWinningTrade,
+    averageLosingTrade: performanceSummary.averageLosingTrade,
+    limit: null,
+  });
+  const recordStartingBalance =
+    recordMetrics.startingPaperBalance ??
+    toNumber(activeRecord.startingPaperBalance) ??
+    SCANNER_CONFIG.simulatedAccountUsd;
+  const recordCautionMode = evaluateRecordCautionMode(performanceSummary, recordStartingBalance);
+  const closedNewLosers = newTrades.filter(
+    (t) => t.status === "CLOSED" && (t.result === "LOSS" || (toNumber(t.netPaperPnl) ?? 0) < 0),
+  );
+  const recordLossAudits = closedNewLosers.map((t) => buildTradeLossAuditReport(t));
+  const activeTradingRules = buildActiveTradingRules();
   const safetyVerification = verifyPaperSafetyGates();
+  const evidenceCollectionMessage =
+    recordStats.paperRuns > 0
+      ? "Paper evidence collecting in this record."
+      : "No paper evidence runs in this record yet.";
+  const capacityRiskLevel =
+    capacity.riskAtStopPct >= PAPER_RISK_CONFIG.maxTotalExposurePercent
+      ? "HIGH"
+      : capacity.riskAtStopPct >= PAPER_RISK_CONFIG.maxTotalExposurePercent * 0.6
+        ? "MEDIUM"
+        : "LOW";
+  const riskLevel = recordCautionMode.active
+    ? recordCautionMode.dashboardLabel
+    : capacityRiskLevel;
+
+  const latestRunSummary = (latestRun?.scanSummary ?? {}) as Record<string, unknown>;
+  const latestRunRejectionSummary =
+    ((latestRun?.scanSummary as Record<string, unknown> | null)?.rejectionSummary as Record<
+      string,
+      number
+    >) ?? {};
+  const latestRunRejectionCategories = summarizeRejectionCategories(latestRunRejectionSummary);
+  const latestRunPnl = latestRun
+    ? await resolveLatestRunPnlFromDb(userId, latestRun, latestRunSummary)
+    : null;
+  const latestRecordRun = latestRun
+    ? {
+        runId: latestRun.id,
+        startedAt: latestRun.startedAt.toISOString(),
+        completedAt: latestRun.completedAt?.toISOString() ?? null,
+        status: latestRun.status,
+        reasonCode: latestRun.reasonCode,
+        reasonText: latestRun.reasonText,
+        latestAction: Array.isArray(latestRun.actions)
+          ? ((latestRun.actions as string[]).at(-1) ?? latestRun.reasonCode ?? "UNKNOWN")
+          : (latestRun.reasonCode ?? "UNKNOWN"),
+        durationMs:
+          latestRun.completedAt && latestRun.startedAt
+            ? latestRun.completedAt.getTime() - latestRun.startedAt.getTime()
+            : null,
+        candidatesStored: latestRun.candidatesStored,
+        signalsStored: latestRun.signalsStored,
+        snapshotsStored: latestRun.snapshotsStored,
+        coinsDiscovered: latestRun.coinsDiscovered,
+        coinsEvaluated: latestRun.coinsEvaluated,
+        rankedCount:
+          ((latestRunSummary.pipeline as Record<string, unknown> | undefined)?.finalCandidates as
+            | number
+            | undefined) ?? null,
+        tradesOpened: latestRun.tradesOpened,
+        tradesUpdated: latestRun.tradesUpdated,
+        tradesClosed: latestRun.tradesClosed,
+        realizedPnlThisRun: latestRunPnl?.realizedPnlThisRun ?? null,
+        unrealizedPnlChangeThisRun: latestRunPnl?.unrealizedPnlChangeThisRun ?? null,
+        netChangeThisRun: latestRunPnl?.netChangeThisRun ?? null,
+        pnlSource: latestRunPnl?.pnlSource ?? "unavailable",
+        pnlUnavailableMessage:
+          latestRunPnl?.pnlSource === "unavailable"
+            ? "P&L unavailable for this run — check record-scoped P&L mapping."
+            : null,
+        rejectionSummary: latestRunRejectionSummary,
+        rejectionCategories: latestRunRejectionCategories,
+        bestDecision:
+          recordScanner?.whyNoTrade?.topReasons?.[0]?.reason ??
+          (latestRun.tradesOpened > 0 ? "OPEN_PAPER_TRADE" : "NO_TRADE_BEST_DECISION"),
+        emptyMessage: null as string | null,
+        simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+      }
+    : {
+        runId: null,
+        startedAt: null,
+        completedAt: null,
+        status: null,
+        reasonCode: null,
+        reasonText: null,
+        latestAction: null,
+        durationMs: null,
+        candidatesStored: 0,
+        signalsStored: 0,
+        snapshotsStored: 0,
+        coinsDiscovered: 0,
+        coinsEvaluated: 0,
+        rankedCount: null,
+        tradesOpened: 0,
+        tradesUpdated: 0,
+        tradesClosed: 0,
+        realizedPnlThisRun: null,
+        unrealizedPnlChangeThisRun: null,
+        netChangeThisRun: null,
+        pnlSource: "unavailable" as const,
+        pnlUnavailableMessage: "P&L unavailable for this run — check record-scoped P&L mapping.",
+        rejectionSummary: {} as Record<string, number>,
+        rejectionCategories: summarizeRejectionCategories({}),
+        bestDecision: null,
+        emptyMessage: "No paper evidence run has completed inside this record yet.",
+        simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+      };
 
   return {
     paperModeReady: true,
     marketDataReady: marketData.configured,
-    paperRuns: stats.paperRuns,
-    candidatesStored: stats.candidatesStored,
-    signalsStored: stats.signalsStored,
-    snapshotsStored: stats.snapshotsStored,
-    paperEvidenceCountTotal: stats.paperEvidenceCountTotal,
-    paperEvidenceCount: stats.paperEvidenceCountTotal,
-    openPaperTrades: stats.openTrades,
-    closedPaperTrades: stats.closedTrades,
-    noTradeSignals: stats.noTradeSignals,
+    paperRuns: recordStats.paperRuns,
+    candidatesStored: recordStats.candidatesStored,
+    signalsStored: recordStats.signalsStored,
+    snapshotsStored: recordStats.snapshotsStored,
+    paperEvidenceCountTotal: recordStats.paperEvidenceCountTotal,
+    paperEvidenceCount: recordStats.paperEvidenceCountTotal,
+    openPaperTrades: recordMetrics.totalOpenTrades,
+    closedPaperTrades: recordMetrics.closedTradesInRecord,
+    noTradeSignals: recordStats.noTradeSignals,
     missedOpportunitiesTotal: stats.missedOpportunitiesTotal,
     maxOpenTrades,
     maxOpenTradesReached: capacity.newTradeOpening === "BLOCKED",
@@ -1027,7 +1611,7 @@ export async function getPaperStatus() {
     openTradeCapacity: capacity,
     missedOpportunities: missed,
     paperRotation: rotation,
-    lastRunAt: stats.lastRunAt,
+    lastRunAt: latestRun?.startedAt?.toISOString() ?? recordStats.lastRunAt,
     latestRunStatus: latestRun?.status ?? null,
     latestRunReasonCode: latestRun?.reasonCode ?? null,
     currentStatus: stats.evidenceStatus,
@@ -1037,10 +1621,21 @@ export async function getPaperStatus() {
         : stats.paperRuns === 0
           ? "Run first paper evidence step"
           : "Keep running paper evidence steps daily",
-    simulatedNetPnl: stats.simulatedNetPnl,
-    wins: stats.wins,
-    losses: stats.losses,
-    breakevens: stats.breakevens,
+    simulatedNetPnl: recordMetrics.recordPnl,
+    wins: recordMetrics.wins,
+    losses: recordMetrics.losses,
+    breakevens: recordMetrics.breakevens,
+    riskLevel,
+    recordCautionMode,
+    recordLossAudits,
+    riskConfig: serializePaperRiskConfig(),
+    dataTruth: {
+      marketData: DATA_TRUTH.realMarketData(),
+      paperTrades: DATA_TRUTH.simulatedPaperTrade(),
+      pnl: DATA_TRUTH.simulatedPnl(),
+    },
+    activeTradingRules,
+    lossAnalysis,
     warning: "Paper P&L is simulated — not live proof",
     prismaClientStale,
     prismaStaleMessage: prismaClientStale ? STALE_PRISMA_MESSAGE : null,
@@ -1048,8 +1643,72 @@ export async function getPaperStatus() {
       modelAccess.stalePrismaDetectedNow && recentWritesSucceeded
         ? "Previous Prisma health check reported stale client, but recent DB writes succeeded."
         : null,
-    scanner,
+    scanner: allTimeScanner,
+    recordScanner,
+    latestRecordRun,
+    defaultDashboardView: DEFAULT_DASHBOARD_VIEW,
+    dashboardDataSource: {
+      label: `Current Record #${activeRecord.recordNumber} — ${activeRecord.recordName}`,
+      recordId: activeRecord.id,
+      recordNumber: activeRecord.recordNumber,
+      recordName: activeRecord.recordName,
+      startedAt: activeRecord.startedAt.toISOString(),
+      scopeNote: "Showing current record only — all-time data available in All-Time / Debug",
+      simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+    },
+    recordWarnings: [
+      "Paper P&L is simulated — not live proof",
+      "Live trading: LOCKED",
+      "Auto execution: LOCKED",
+      ...(recordCautionMode.active ? [recordCautionMode.dashboardMessage] : []),
+      ...(carriedOpenTradesDetail.some((t) => t.legacyBaselineMissing)
+        ? [
+            "Legacy carry baseline missing. Run db:generate + db:push, then start a new record for accurate carry delta.",
+          ]
+        : []),
+      ...(prismaClientStale ? [STALE_PRISMA_MESSAGE] : []),
+    ],
     tradeHistory,
+    performanceSummary: recordMetrics,
+    currentRecord: recordMetrics,
+    recordHistory,
+    archivedRecords,
+    recordComparison,
+    carriedOpenTradesCount: recordMetrics.carriedOpenTrades,
+    carriedOpenTradesDetail,
+    recordActivityCounts,
+    recordActivityFeed,
+    botHealthCheck,
+    recordOpenTrades,
+    recordNewTradeHistory,
+    allTimeDebug: {
+      paperRuns: stats.paperRuns,
+      candidatesStored: stats.candidatesStored,
+      signalsStored: stats.signalsStored,
+      snapshotsStored: stats.snapshotsStored,
+      paperEvidenceCountTotal: stats.paperEvidenceCountTotal,
+      openPaperTrades: stats.openTrades,
+      closedPaperTrades: stats.closedTrades,
+      simulatedNetPnl: stats.simulatedNetPnl,
+      wins: stats.wins,
+      losses: stats.losses,
+      breakevens: stats.breakevens,
+      lastRunAt: stats.lastRunAt,
+      simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+    },
+    activeRecord: {
+      recordId: activeRecord.id,
+      recordNumber: activeRecord.recordNumber,
+      recordName: activeRecord.recordName,
+      strategyVersion: activeRecord.strategyVersion,
+      startedAt: activeRecord.startedAt.toISOString(),
+    },
+    currentStrategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
+    riskPerformanceScope: "baseline" as const,
+    profitQuality,
+    historyDiagnostic,
+    evidenceCollectionMessage,
+    hasPaperRuns: stats.paperRuns > 0,
     safetyVerification,
     liveTradingLocked: true as const,
     autoExecutionLocked: safetyVerification.autoExecutionLocked,
@@ -1068,9 +1727,33 @@ export async function runPaperEvidenceStep(options?: {
   now?: Date;
 }) {
   const userId = await resolvePaperUserId();
+  const activeRecord = await ensurePaperRecords(userId);
+  const recordId = activeRecord.id;
   const startedAt = options?.now ?? new Date();
   const fetchSnapshot = options?.fetchSnapshot ?? getMarketSnapshot;
   const buildWide = options?.buildWide ?? buildWideUniverse;
+
+  const recordTradesForCaution = await prisma.paperTrade.findMany({
+    where: { userId, recordId },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+  const recordPerfForCaution = buildPaperPerformanceSummary({
+    trades: recordTradesForCaution,
+    latestMarkByTradeId: new Map(),
+    maxDrawdown: null,
+  });
+  const recordCaution = evaluateRecordCautionMode(
+    recordPerfForCaution,
+    toNumber(activeRecord.startingPaperBalance) ?? SCANNER_CONFIG.simulatedAccountUsd,
+  );
+  const recordCautionSelection = recordCaution.active
+    ? {
+        active: true,
+        minScoreBoost: recordCaution.minScoreBoost,
+        blockHighVolAlts: recordCaution.blockHighVolAlts,
+      }
+    : undefined;
 
   const countsBefore = await getPaperEvidenceCountSnapshot(userId);
   const evidenceCountBefore = computePaperEvidenceCountTotal(countsBefore);
@@ -1147,6 +1830,8 @@ export async function runPaperEvidenceStep(options?: {
     run = await prisma.paperEvidenceRun.create({
       data: {
         userId,
+        recordId,
+        strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
         status: "RUNNING",
         symbols,
         marketDataReady: getMarketDataProviderStatus().configured,
@@ -1202,6 +1887,20 @@ export async function runPaperEvidenceStep(options?: {
     where: { userId, status: "OPEN" },
   });
 
+  const allTradesBeforeRun = await prisma.paperTrade.findMany({ where: { userId } });
+  const openWithSnapsBefore = await prisma.paperTrade.findMany({
+    where: { userId, status: "OPEN" },
+    include: { snapshots: { orderBy: { capturedAt: "desc" }, take: 1 } },
+  });
+  const marksBefore = new Map<string, number>();
+  for (const t of openWithSnapsBefore) {
+    const snap = t.snapshots[0];
+    const m = snap ? toNumber(snap.markPrice) : toNumber(t.entryPrice);
+    if (m !== null) marksBefore.set(t.id, m);
+  }
+  const portfolioBeforeRun = computePortfolioSnapshot(allTradesBeforeRun, marksBefore);
+  const tradeReadyNotOpenedSymbols = new Set<string>();
+
   for (const trade of openTrades) {
     try {
       const snapshot = await fetchSnapshot(trade.symbol);
@@ -1213,8 +1912,8 @@ export async function runPaperEvidenceStep(options?: {
         now,
         snapshot,
       );
-      actions.push(action);
-      latestAction = action;
+      actions.push(mapPaperRunActionToExecution(action) as PaperRunAction);
+      latestAction = mapPaperRunActionToExecution(action) as PaperRunAction;
       if (snapshotStored) {
         snapshotsStored++;
       } else {
@@ -1296,6 +1995,7 @@ export async function runPaperEvidenceStep(options?: {
         snapshot,
         tickerRow: tiered.tickerRow ?? tickerBySymbol.get(tiered.symbol),
         tiered,
+        recordCaution: recordCautionSelection,
       });
       return { symbol: tiered.symbol, candidate, fetchOk: true, spreadBps, stale };
     } catch {
@@ -1380,7 +2080,7 @@ export async function runPaperEvidenceStep(options?: {
   const candidateWriteWarnings: string[] = [];
 
   for (const c of ranked) {
-    const stored = await storeCandidateSafe(run.id, userId, c);
+    const stored = await storeCandidateSafe(run.id, userId, recordId, c);
     if (stored.ok) {
       candidatesStored++;
       if (stored.fieldWarnings && Object.keys(stored.fieldWarnings).length > 0) {
@@ -1539,8 +2239,8 @@ export async function runPaperEvidenceStep(options?: {
             rotatedIn: candidate.symbol,
             exitSimulatedPnl: closed.netPnl,
           });
-          actions.push("PAPER_ROTATION_EXIT");
-          latestAction = "PAPER_ROTATION_EXIT";
+          actions.push("PAPER_TRADE_CLOSED");
+          latestAction = "PAPER_TRADE_CLOSED";
           tradesClosed++;
           rotationsPerformed++;
           activeOpenTrades = activeOpenTrades.filter((t) => t.id !== weakestId);
@@ -1557,7 +2257,8 @@ export async function runPaperEvidenceStep(options?: {
           });
           if (stored) {
             missedOpportunitiesStored++;
-            actions.push("MISSED_OPPORTUNITY");
+            actions.push("PAPER_TRADE_SKIPPED_MAX_OPEN");
+            tradeReadyNotOpenedSymbols.add(candidate.symbol);
           }
           noTradeCount++;
           continue;
@@ -1582,7 +2283,8 @@ export async function runPaperEvidenceStep(options?: {
         });
         if (stored) {
           missedOpportunitiesStored++;
-          actions.push("MISSED_OPPORTUNITY");
+          actions.push("PAPER_TRADE_SKIPPED_MAX_OPEN");
+          tradeReadyNotOpenedSymbols.add(candidate.symbol);
           latestAction = "MISSED_OPPORTUNITY";
         }
         noTradeCount++;
@@ -1603,13 +2305,17 @@ export async function runPaperEvidenceStep(options?: {
     }
 
     const momentum = momentumFromSnapshot(snapshot);
-    const strategy = evaluateControlledActiveStrategy(candidate, momentum);
+    const strategy = evaluateControlledActiveStrategy(candidate, momentum, {
+      allocationMultiplier: recordCaution.active ? recordCaution.allocationMultiplier : 1,
+    });
     const { baseAsset, quoteAsset } = parseSymbol(candidate.symbol);
 
     const signal = await prisma.paperSignal.create({
       data: {
         runId: run.id,
         userId,
+        recordId,
+        strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
         symbol: candidate.symbol,
         side: (strategy.decision === "NO_TRADE" ? "NO_TRADE" : strategy.decision) as PaperTradeSide,
         strategyName: PAPER_CONFIG.strategyName,
@@ -1628,6 +2334,8 @@ export async function runPaperEvidenceStep(options?: {
         data: {
           userId,
           signalId: signal.id,
+          recordId,
+          strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
           symbol: candidate.symbol,
           baseAsset,
           quoteAsset,
@@ -1652,6 +2360,8 @@ export async function runPaperEvidenceStep(options?: {
       data: {
         userId,
         signalId: signal.id,
+        recordId,
+        strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
         symbol: candidate.symbol,
         baseAsset,
         quoteAsset,
@@ -1668,8 +2378,8 @@ export async function runPaperEvidenceStep(options?: {
         result: "OPEN",
         confidence: strategy.confidence,
         reason: strategy.warning
-          ? `${strategy.warning}: ${strategy.reason}`
-          : `${strategy.reason} | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`,
+          ? `${strategy.warning}: ${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`
+          : `${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`,
         dataSource: "kraken",
         isRealTrade: false,
         isVerifiedLivePnl: false,
@@ -1688,8 +2398,8 @@ export async function runPaperEvidenceStep(options?: {
       usLeverageAvailable: strategy.usLeverageAvailable,
       marketType: strategy.marketType,
     });
-    actions.push("TRADE_OPENED");
-    latestAction = "TRADE_OPENED";
+    actions.push("PAPER_TRADE_OPENED");
+    latestAction = "PAPER_TRADE_OPENED";
     tradesOpened++;
     newTradesThisRun++;
     currentOpenCount++;
@@ -1800,7 +2510,7 @@ export async function runPaperEvidenceStep(options?: {
     prismaCriticalFailure,
   });
 
-  const reasonCode = resolveRunReasonCode({
+  let reasonCode = resolveRunReasonCode({
     status: runStatus,
     countDelta,
     tradesOpened,
@@ -1824,6 +2534,16 @@ export async function runPaperEvidenceStep(options?: {
             : undefined,
   });
 
+  if (
+    runStatus === "COMPLETED" &&
+    tradesOpened === 0 &&
+    noTradeCount > 0 &&
+    reasonCode !== "MAX_OPEN_TRADES_REACHED" &&
+    reasonCode !== "ONLY_UPDATED_EXISTING_TRADES"
+  ) {
+    reasonCode = "NO_TRADE_BEST_DECISION";
+  }
+
   const reasonText =
     runStatus === "NOOP"
       ? `Run completed but no new evidence was stored beyond the run record.`
@@ -1838,6 +2558,36 @@ export async function runPaperEvidenceStep(options?: {
             : runStatus === "FAILED"
               ? "No useful evidence was saved."
               : `Paper evidence total ${countDelta >= 0 ? "+" : ""}${countDelta} (${evidenceCountBefore} → ${evidenceCountAfter}).`;
+
+  const allTradesAfterRun = await prisma.paperTrade.findMany({ where: { userId } });
+  const openWithSnapsAfter = await prisma.paperTrade.findMany({
+    where: { userId, status: "OPEN" },
+    include: { snapshots: { orderBy: { capturedAt: "desc" }, take: 1 } },
+  });
+  const marksAfter = new Map<string, number>();
+  for (const t of openWithSnapsAfter) {
+    const snap = t.snapshots[0];
+    const m = snap ? toNumber(snap.markPrice) : toNumber(t.entryPrice);
+    if (m !== null) marksAfter.set(t.id, m);
+  }
+  const portfolioAfterRun = computePortfolioSnapshot(allTradesAfterRun, marksAfter);
+  const closedThisRun = allTradesAfterRun.filter(
+    (t) =>
+      (t.status === "CLOSED" || t.status === "EXPIRED") &&
+      t.closedAt &&
+      t.closedAt >= startedAt &&
+      t.closedAt <= finishedAt,
+  );
+  const realizedPnlThisRun = closedThisRun.reduce(
+    (s, t) => s + (toNumber(t.netPaperPnl) ?? 0),
+    0,
+  );
+  const runPnlDelta = computeRunPnlDelta(
+    portfolioBeforeRun,
+    portfolioAfterRun,
+    realizedPnlThisRun,
+  );
+  const currentRunPnlDelta = runPnlDelta.netPnlDeltaThisRun;
 
   await prisma.paperEvidenceRun.update({
     where: { id: run.id },
@@ -1952,12 +2702,32 @@ export async function runPaperEvidenceStep(options?: {
         watchlistOnlyMovers: dedupeBySymbol(
           split.watchlistOnlyCandidates.slice(0, 10).map(serializeCandidate),
         ),
+        realizedPnlThisRun: runPnlDelta.realizedPnlThisRun,
+        unrealizedPnlChangeThisRun: runPnlDelta.unrealizedPnlChangeThisRun,
+        currentRunPnlDelta: runPnlDelta.netPnlDeltaThisRun,
+        netPnlDeltaThisRun: runPnlDelta.netPnlDeltaThisRun,
+        portfolioPnlBeforeRun: runPnlDelta.portfolioPnlBeforeRun,
+        portfolioPnlAfterRun: runPnlDelta.portfolioPnlAfterRun,
       },
     },
   });
 
   const stats = await getPaperEvidenceStats(userId);
-  const currentRunPnlDelta = 0;
+
+  const deepEvaluationExplanation = buildDeepEvaluationExplanation({
+    coinsDiscovered: wideResult.coinsDiscovered,
+    coinsScanned: wideResult.pipeline.coinsScanned,
+    passedFilters: wideResult.pipeline.passedBasicFilters,
+    deepEvaluated: scanSymbols.length,
+    limit: SCANNER_CONFIG.maxEvaluatedCoins,
+  });
+  const skippedFromDeepEvaluation = Math.max(
+    0,
+    wideResult.pipeline.passedBasicFilters - scanSymbols.length,
+  );
+
+  const serializeWithLabels = (c: ScanCandidate) =>
+    serializeCandidate(c, tradeReadyNotOpenedSymbols.has(c.symbol), tradesOpened);
 
   return {
     runId: run.id,
@@ -2009,17 +2779,17 @@ export async function runPaperEvidenceStep(options?: {
     snapshotWriteFailures,
     tradeWriteFailures,
     errors: runErrors,
-    topCandidates: dedupeBySymbol(ranked.slice(0, 10).map(serializeCandidate)),
+    topCandidates: dedupeBySymbol(ranked.slice(0, 10).map(serializeWithLabels)),
     highVolatilityOpportunities: dedupeBySymbol(
-      split.highVolatilityCandidates.slice(0, 10).map(serializeCandidate),
+      split.highVolatilityCandidates.slice(0, 10).map(serializeWithLabels),
     ),
     tradablePaperCandidates: dedupeBySymbol(
-      split.tradablePaperCandidates.slice(0, 10).map(serializeCandidate),
+      split.tradablePaperCandidates.slice(0, 10).map(serializeWithLabels),
     ),
     watchlistOnlyMovers: dedupeBySymbol(
-      split.watchlistOnlyCandidates.slice(0, 10).map(serializeCandidate),
+      split.watchlistOnlyCandidates.slice(0, 10).map(serializeWithLabels),
     ),
-    rejectedCandidates: dedupeBySymbol(rejectedCandidates.slice(0, 10).map(serializeCandidate)),
+    rejectedCandidates: dedupeBySymbol(rejectedCandidates.slice(0, 10).map(serializeWithLabels)),
     openedTrades,
     rejectionSummary,
     actions,
@@ -2031,8 +2801,24 @@ export async function runPaperEvidenceStep(options?: {
     paperRuns: stats.paperRuns,
     paperEvidenceCountTotal: stats.paperEvidenceCountTotal,
     simulatedNetPnl: stats.simulatedNetPnl,
-    portfolioSimulatedNetPnl: stats.simulatedNetPnl,
+    portfolioSimulatedNetPnl: portfolioAfterRun.totalPnl,
+    portfolioPnlBeforeRun: runPnlDelta.portfolioPnlBeforeRun,
+    portfolioPnlAfterRun: runPnlDelta.portfolioPnlAfterRun,
+    realizedPnlThisRun: runPnlDelta.realizedPnlThisRun,
+    unrealizedPnlChangeThisRun: runPnlDelta.unrealizedPnlChangeThisRun,
     currentRunPnlDelta,
+    deepEvaluationLimit: SCANNER_CONFIG.maxEvaluatedCoins,
+    skippedFromDeepEvaluation,
+    deepEvaluationExplanation,
+    deepEvaluationCapFromEnv: true,
+    passedBasicFilters: wideResult.pipeline.passedBasicFilters,
+    dynamicCapacity: {
+      baseMaxOpenTrades: SCANNER_CONFIG.maxOpenTrades,
+      dynamicMaxOpenTrades: effectiveMaxOpenTrades,
+      currentOpenTrades: openTradesAfter,
+      availableSlots: Math.max(0, effectiveMaxOpenTrades - openTradesAfter),
+      factors: capacityState.factors,
+    },
     warnings: runWarnings,
     runOutcomeMessage:
       runStatus === "FAILED"
@@ -2070,9 +2856,12 @@ async function buildFailedRunResponse(
   let finalReasonText = reasonText;
 
   try {
+    const activeRecord = await ensurePaperRecords(userId);
     const run = await prisma.paperEvidenceRun.create({
       data: {
         userId,
+        recordId: activeRecord.id,
+        strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
         status: "FAILED",
         reasonCode: finalReasonCode,
         reasonText: finalReasonText,

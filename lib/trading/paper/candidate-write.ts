@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import type { ScanCandidate } from "@/lib/trading/paper/opportunity-scanner";
 import type { RiskTier } from "@/lib/trading/paper/scanner-config";
 import { isPrismaStaleError } from "@/lib/trading/paper/prisma-health";
+import { CURRENT_PAPER_STRATEGY_VERSION } from "@/lib/trading/paper/paper-strategy-version";
 
 const MAX_SYMBOL_LEN = 32;
 const MAX_SOURCE_LEN = 64;
@@ -11,6 +12,8 @@ const MAX_ACTION_LEN = 32;
 
 /** Decimal(24, 12) — max 12 digits before the decimal point. */
 export const DECIMAL_24_12_MAX = 999_999_999_999.999999;
+/** Decimal(36, 12) — supports large market caps (e.g. BTC ~$2T). */
+export const DECIMAL_36_12_MAX = 999_999_999_999_999_999_999_999_999_999.999999;
 /** Decimal(12, 6) — max 6 digits before the decimal point. */
 export const DECIMAL_12_6_MAX = 999_999.999999;
 
@@ -129,7 +132,7 @@ function parsePrismaFieldErrors(msg: string): Record<string, string> {
   }
 
   if (clean.includes("marketCap") || clean.includes("market_cap")) {
-    fieldErrors.marketCap = "exceeds Decimal(24,12) range or invalid";
+    fieldErrors.marketCap = "exceeds Decimal(36,12) range or invalid";
   }
 
   if (Object.keys(fieldErrors).length === 0 && clean.includes("Decimal")) {
@@ -144,6 +147,7 @@ export function prepareCandidateWriteData(
   runId: string,
   userId: string,
   c: ScanCandidate,
+  recordId?: string | null,
 ): CandidateWriteResult {
   const fieldErrors: Record<string, string> = {};
   const fieldWarnings: Record<string, string> = {};
@@ -231,6 +235,12 @@ export function prepareCandidateWriteData(
     return result.decimal;
   }
 
+  function dec36(name: string, value: number | null | undefined): string | null {
+    const result = toSafeDecimalString(value, DECIMAL_36_12_MAX, 12);
+    if (result.warning) fieldWarnings[name] = result.warning;
+    return result.decimal;
+  }
+
   function dec12(name: string, value: number | null | undefined, clamp = false): string | null {
     const v = value !== null && value !== undefined && clamp ? clampScore(value) : value;
     const result = toSafeDecimalString(v, DECIMAL_12_6_MAX, 6);
@@ -242,7 +252,7 @@ export function prepareCandidateWriteData(
   const spreadBps = dec12("spreadBps", c.spreadBps);
   const volume24hUsd = dec24("volume24hUsd", c.volume24hUsd, true);
   const change24hPct = dec12("change24hPct", c.change24hPct);
-  const marketCap = dec24("marketCap", c.marketCapUsd);
+  const marketCap = dec36("marketCap", c.marketCapUsd);
 
   if (fieldErrors.price) {
     return {
@@ -293,6 +303,8 @@ export function prepareCandidateWriteData(
       action: clampString(normalizeActionType(c.actionType), MAX_ACTION_LEN),
       reasonCode: clampString(c.reasonCode.trim(), MAX_REASON_CODE_LEN),
       reasonText: clampString(c.reasonText.trim(), MAX_REASON_TEXT_LEN),
+      strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
+      recordId: recordId ?? null,
     },
   };
 }
