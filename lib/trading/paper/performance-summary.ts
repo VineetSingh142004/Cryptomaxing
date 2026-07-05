@@ -434,3 +434,17 @@ export function formatMetric(value: number | null | undefined, digits = 4): stri
   if (value === null || value === undefined || !Number.isFinite(value)) return "UNKNOWN";
   return value.toFixed(digits);
 }
+
+export function formatProfitFactorDisplay(
+  profitFactor: number | null,
+  wins: number,
+  losses: number,
+): string {
+  if (wins > 0 && losses === 0) {
+    return "No losses yet — profit factor not meaningful";
+  }
+  if (profitFactor === null || !Number.isFinite(profitFactor)) {
+    return wins === 0 && losses === 0 ? "Not enough data" : "UNKNOWN";
+  }
+  return profitFactor.toFixed(2);
+}

@@ -15,8 +15,10 @@ import { mapCandidateRecommendationLabel, summarizeRejectionCategories } from "@
 import {
   buildPaperPerformanceSummary,
   formatMetric,
+  formatProfitFactorDisplay,
   type PaperPerformanceSummary,
 } from "@/lib/trading/paper/performance-summary";
+import { buildCarriedClosedTradeSnapshots } from "@/lib/trading/paper/record-accounting";
 import type { NormalizedMarketSnapshot } from "@/lib/trading/data/types";
 import {
   evaluateOpenTradeThesisReview,
@@ -25,12 +27,14 @@ import {
   buildRecordComparison,
   buildRecordHistoryRows,
   buildCarriedTradeSnapshots,
+  buildCurrentRecordAccounting,
   buildRecordActivityFeed,
   buildRecordBotHealthCheck,
   computeRecordPerformanceBreakdown,
   isNewRecordTrade,
   recordHeading,
   serializePaperRecord,
+  type CurrentRecordAccounting,
   type SerializedPaperRecord,
   ensurePaperRecords,
   getActivePaperRecord,
@@ -315,6 +319,7 @@ interface PaperExportData {
   activeRecord: SerializedPaperRecord | null;
   recordHistory: Awaited<ReturnType<typeof buildRecordHistoryRows>>;
   recordComparison: ReturnType<typeof buildRecordComparison>;
+  currentRecordAccounting: CurrentRecordAccounting | null;
   lossPanel: ReturnType<typeof analyzeLosingTrades>;
   evidenceCounts: {
     runs: number;
@@ -434,6 +439,15 @@ async function loadPaperExportData(ctx: PaperExportContext): Promise<PaperExport
   const activeRecord = activeRecordRow ? serializePaperRecord(activeRecordRow) : null;
   const recordHistory = await buildRecordHistoryRows(userId);
   const recordComparison = buildRecordComparison(recordHistory);
+  const currentRecordAccounting =
+    activeRecordRow && activeRecord
+      ? buildCurrentRecordAccounting({
+          record: activeRecordRow,
+          recordTrades: trades.filter((t) => t.recordId === activeRecord.recordId),
+          allTrades: trades,
+          openTradesWithSnaps,
+        })
+      : null;
 
   const candidateScores = new Map(
     latestCandidates.map((c) => [c.symbol, toNumber(c.opportunityScore) ?? 0]),
@@ -463,6 +477,7 @@ async function loadPaperExportData(ctx: PaperExportContext): Promise<PaperExport
     activeRecord,
     recordHistory,
     recordComparison,
+    currentRecordAccounting,
     lossPanel,
     evidenceCounts,
   };
@@ -670,11 +685,14 @@ function buildRecordSummaryLines(
     winRate: number | null;
     profitFactor: number | null;
     newTradesOpened?: number;
+    newOpenTrades?: number;
     carriedOpenTrades?: number;
     newRecordRealizedPnl?: number;
     newRecordUnrealizedPnl?: number;
     carriedPnlSinceCarry?: number;
-    currentPaperBalance?: number;
+    startingEquity?: number;
+    currentEquity?: number;
+    cashBalance?: number;
     activityCounts?: {
       runsCompletedInRecord: number;
       tradesUpdatedInRecord: number;
@@ -686,27 +704,36 @@ function buildRecordSummaryLines(
 ): string[] {
   const lines = [
     recordHeading(record),
-    line("Starting balance (SIM)", formatMetric(record.startingPaperBalance)),
+    line("Starting equity (SIM)", formatMetric(metrics.startingEquity ?? record.startingPaperBalance)),
   ];
   if (record.status === "ARCHIVED") {
-    lines.push(line("Ending balance (SIM)", formatMetric(record.endingPaperBalance)));
+    lines.push(line("Ending equity (SIM)", formatMetric(record.endingPaperBalance)));
   } else {
-    lines.push(line("Current balance (SIM)", formatMetric(metrics.currentPaperBalance ?? record.startingPaperBalance)));
+    lines.push(line("Current equity (SIM)", formatMetric(metrics.currentEquity ?? record.startingPaperBalance)));
+    if (metrics.cashBalance !== undefined) {
+      lines.push(line("Cash balance (SIM)", formatMetric(metrics.cashBalance)));
+    }
   }
   lines.push(
-    line("P&L since record start (SIM)", formatMetric(metrics.recordPnl)),
+    line("Total record P&L (SIM)", formatMetric(metrics.recordPnl)),
     line("Realized P&L — new trades in record (SIM)", formatMetric(metrics.newRecordRealizedPnl ?? 0)),
     line("Unrealized P&L — new trades in record (SIM)", formatMetric(metrics.newRecordUnrealizedPnl ?? 0)),
     line("Carried trade P&L since carry (SIM)", formatMetric(metrics.carriedPnlSinceCarry ?? 0)),
-    line("New trades opened in this record", metrics.newTradesOpened ?? metrics.closedTrades),
+    line("New trades opened in this record", metrics.newTradesOpened ?? 0),
+    line("New open trades", metrics.newOpenTrades ?? 0),
     line("Carried open trades", metrics.carriedOpenTrades ?? 0),
-    line("Closed trades in this record", metrics.closedTrades),
-    line("Win rate", metrics.winRate !== null ? `${(metrics.winRate * 100).toFixed(1)}%` : "Not enough data"),
-    line("Profit factor", metrics.profitFactor !== null ? formatMetric(metrics.profitFactor) : "Not enough data"),
+    line("Closed new trades in this record", metrics.closedTrades),
+    line("Win rate (closed new trades)", metrics.winRate !== null ? `${(metrics.winRate * 100).toFixed(1)}%` : "Not enough data"),
+    line("Profit factor (closed new trades)", metrics.profitFactor !== null ? formatMetric(metrics.profitFactor) : "Not enough data"),
     line("Notes", record.notes ?? "none"),
     "",
   );
-  if ((metrics.newTradesOpened ?? 0) === 0 && (metrics.closedTrades ?? 0) === 0 && record.status === "ACTIVE") {
+  if (
+    (metrics.newTradesOpened ?? 0) === 0 &&
+    (metrics.closedTrades ?? 0) === 0 &&
+    (metrics.newOpenTrades ?? 0) === 0 &&
+    record.status === "ACTIVE"
+  ) {
     lines.splice(lines.length - 1, 0, "Fresh record started. Not enough closed trades yet.");
   }
   if (metrics.activityCounts) {
@@ -931,8 +958,27 @@ function buildCurrentRecordRejectionSection(run: PaperEvidenceRun | undefined): 
   );
 }
 
+function buildBlueprintExportSection(run: PaperEvidenceRun | undefined): string {
+  const summary = (run?.scanSummary ?? {}) as Record<string, unknown>;
+  const why = summary.whyNoTradeReport as
+    | { finalReason?: string; exactBlocker?: string; blockedBy?: Record<string, number> }
+    | undefined;
+  const lines = [
+    line("Why no trade opened", why?.finalReason ?? run?.reasonText ?? "—"),
+    line("Exact blocker", why?.exactBlocker ?? "—"),
+  ];
+  if (why?.blockedBy) {
+    for (const [k, v] of Object.entries(why.blockedBy)) {
+      if (v > 0) lines.push(line(`Blocked ${k}`, v));
+    }
+  }
+  lines.push(line("Paper broker realism", "See dashboard — partial fills/latency NOT_IMPLEMENTED"));
+  return section("SECTION 7B — BLUEPRINT ALIGNMENT (SIMULATED)", lines);
+}
+
 function buildCurrentRecordActivitySection(
   runs: PaperEvidenceRun[],
+  accounting: CurrentRecordAccounting | null,
 ): string {
   const feed = buildRecordActivityFeed(
     runs.map((run) => ({
@@ -945,6 +991,12 @@ function buildCurrentRecordActivitySection(
       scanSummary: run.scanSummary,
     })),
     10,
+    accounting
+      ? {
+          newTradesClosedInRecord: accounting.newClosedTrades,
+          carriedTradesClosedInRecord: accounting.carriedClosedTrades,
+        }
+      : undefined,
   );
   return section(
     "SECTION 8 — CURRENT RECORD ACTIVITY FEED",
@@ -955,26 +1007,14 @@ function buildCurrentRecordActivitySection(
 }
 
 function buildCurrentRecordSection(data: PaperExportData): string {
-  const active = data.recordHistory.find((r) => r.status === "ACTIVE") ?? data.activeRecord;
+  const active = data.activeRecord;
   if (!active) {
     return section("SECTION 1 — CURRENT RECORD SUMMARY", ["No active paper record."]);
   }
-  const recordTrades = data.trades.filter((t) => t.recordId === active.recordId);
-  const markMap = new Map<string, number>();
-  for (const t of data.openTradesWithSnaps) {
-    const snap = t.snapshots[0];
-    const mark = snap ? toNumber(snap.markPrice) : toNumber(t.entryPrice);
-    if (mark !== null) markMap.set(t.id, mark);
+  const accounting = data.currentRecordAccounting;
+  if (!accounting) {
+    return section("SECTION 1 — CURRENT RECORD SUMMARY (SIMULATED)", ["Current record accounting unavailable."]);
   }
-  const breakdown = computeRecordPerformanceBreakdown({
-    record: {
-      id: active.recordId,
-      startingPaperBalance: active.startingPaperBalance,
-    } as never,
-    recordTrades,
-    allTrades: data.trades,
-    markMap,
-  });
   const historyRow = data.recordHistory.find((r) => r.recordId === active.recordId);
   const recordRuns = data.runs.filter(
     (run) =>
@@ -986,7 +1026,7 @@ function buildCurrentRecordSection(data: PaperExportData): string {
     tradesUpdatedInRecord: recordRuns.reduce((sum, r) => sum + (r.tradesUpdated ?? 0), 0),
     candidatesScannedInRecord: recordRuns.reduce((sum, r) => sum + (r.candidatesStored ?? 0), 0),
     rejectionsInRecord: sumRecordRejectionCounts(recordRuns),
-    carriedTradesMonitored: breakdown.carriedOpenTrades,
+    carriedTradesMonitored: accounting.carriedOpenTrades,
   };
   return section("SECTION 1 — CURRENT RECORD SUMMARY (SIMULATED)", [
     line("Record name", active.recordName),
@@ -994,33 +1034,58 @@ function buildCurrentRecordSection(data: PaperExportData): string {
     line("Strategy version", active.strategyVersion),
     line("Started at", active.startedAt),
     ...buildRecordSummaryLines(active, {
-      recordPnl: breakdown.recordPnl,
-      closedTrades: breakdown.closedTradesInRecord,
+      recordPnl: accounting.totalRecordPnl,
+      closedTrades: accounting.newClosedTrades,
       winRate: historyRow?.winRate ?? null,
       profitFactor: historyRow?.profitFactor ?? null,
-      newTradesOpened: breakdown.newTradesOpened,
-      carriedOpenTrades: breakdown.carriedOpenTrades,
-      newRecordRealizedPnl: breakdown.newRecordRealizedPnl,
-      newRecordUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
-      carriedPnlSinceCarry: breakdown.carriedPnlSinceCarry,
-      currentPaperBalance: breakdown.currentPaperBalance,
+      newTradesOpened: accounting.newTradesOpened,
+      newOpenTrades: accounting.newOpenTrades,
+      carriedOpenTrades: accounting.carriedOpenTrades,
+      newRecordRealizedPnl: accounting.newRealizedPnl,
+      newRecordUnrealizedPnl: accounting.newUnrealizedPnl,
+      carriedPnlSinceCarry: accounting.carriedTotalPnl,
+      startingEquity: accounting.startingEquity,
+      currentEquity: accounting.currentEquity,
+      cashBalance: accounting.cashBalance,
       activityCounts,
     }).slice(1),
-    line("New trades opened in this record", breakdown.newTradesOpened),
-    line("Carried trades being monitored", breakdown.carriedOpenTrades),
-    "Bot can be working even when new trades opened = 0 if runs, scans, and carried trade updates continue.",
+    "Current equity = starting equity + total record P&L (includes unrealized open-trade P&L).",
+    line("Clean Fresh Start available", accounting.cleanFreshStart.available ? "YES" : "NO"),
+    accounting.cleanFreshStart.available
+      ? accounting.cleanFreshStart.message
+      : line(
+          "Blocking open trades",
+          `${accounting.cleanFreshStart.blockingOpenTradeCount} (${accounting.cleanFreshStart.blockingSymbols.join(", ") || "none"})`,
+        ),
   ]);
 }
 
-function buildNewRecordTradeLogSection(record: SerializedPaperRecord, trades: DbPaperTrade[]): string {
-  const newTrades = trades.filter((t) => t.recordId === record.recordId && isNewRecordTrade(t));
+function buildNewRecordTradeLogSection(
+  record: SerializedPaperRecord,
+  accounting: CurrentRecordAccounting | null,
+): string {
   const lines: string[] = [];
-  if (newTrades.length === 0) {
+  const openTrades = accounting?.newOpenTradeDetails ?? [];
+  const closedTrades = accounting?.newClosedTradeDetails ?? [];
+  const allTrades = [...openTrades, ...closedTrades];
+  if (allTrades.length === 0) {
     lines.push("No new trades opened in this record yet.");
   } else {
-    newTrades.forEach((t, i) => {
-      const row = buildTradeHistoryRow(t, i + 1);
-      lines.push(`Trade #${i + 1} ${row.coin} ${row.finalResult} ${row.netPnl ?? "UNKNOWN"} SIM`);
+    allTrades.forEach((t, i) => {
+      lines.push(`--- Trade #${i + 1} ${t.symbol} ${t.side} ${t.status} ---`);
+      lines.push(line("Entry time", t.entryTime ?? "UNKNOWN"));
+      lines.push(line("Entry price", formatMetric(t.entryPrice)));
+      lines.push(line("Current price", formatMetric(t.currentPrice)));
+      lines.push(line("Quantity", formatMetric(t.quantity)));
+      lines.push(line("Unrealized P&L (SIM)", formatMetric(t.unrealizedPnl)));
+      lines.push(line("Realized P&L (SIM)", formatMetric(t.realizedPnl)));
+      lines.push(line("P&L since record start (SIM)", formatMetric(t.recordPnlSinceStart)));
+      lines.push(line("Strategy", t.strategyName));
+      lines.push(line("Thesis status", t.thesisStatus));
+      lines.push(line("Distance to TP", t.distanceToTpPct !== null ? `${t.distanceToTpPct}%` : "UNKNOWN"));
+      lines.push(line("Distance to SL", t.distanceToSlPct !== null ? `${t.distanceToSlPct}%` : "UNKNOWN"));
+      if (t.exitReason) lines.push(line("Exit reason", t.exitReason));
+      lines.push("");
     });
   }
   return section("SECTION 4 — NEW TRADES IN THIS RECORD", lines);
@@ -1054,6 +1119,35 @@ function buildCarriedTradesExportSection(
     lines.push("");
   }
   return section("SECTION 5 — CARRIED OPEN TRADES", lines);
+}
+
+function buildCarriedClosedTradesExportSection(
+  record: SerializedPaperRecord,
+  trades: DbPaperTrade[],
+  markMap: Map<string, number>,
+): string {
+  const carried = splitRecordTrades(trades.filter((t) => t.recordId === record.recordId)).carried;
+  const closed = buildCarriedClosedTradeSnapshots(carried, markMap);
+  if (closed.length === 0) {
+    return section("SECTION 5b — CARRIED CLOSED TRADES", ["No carried closed trades in this record."]);
+  }
+  const lines: string[] = [];
+  for (const t of closed) {
+    lines.push(`--- ${t.symbol} ${t.side} ---`);
+    lines.push(line("Original entry time", t.originalEntryTime));
+    lines.push(line("Carried into record", t.carriedIntoRecordTime));
+    lines.push(line("Exit time", t.exitTime));
+    lines.push(line("P&L since carry (SIM)", t.pnlSinceCarryDisplay));
+    lines.push(line("All-time P&L (SIM)", formatMetric(t.allTimePnl)));
+    lines.push(line("Exit reason", t.exitReason ?? "UNKNOWN"));
+    lines.push(line("Thesis status", t.thesisStatus));
+    lines.push(line("Counts toward total record P&L", t.countsTowardRecordPnl ? "YES" : "NO"));
+    lines.push("");
+  }
+  lines.push("CARRIED TRADE P&L SUMMARY:");
+  const totalSinceCarry = closed.reduce((s, t) => s + (t.pnlSinceCarry ?? 0), 0);
+  lines.push(line("Total carried closed P&L since carry (SIM)", formatMetric(totalSinceCarry)));
+  return section("SECTION 5b — CARRIED CLOSED TRADES", lines);
 }
 
 function buildRecordComparisonSection(data: PaperExportData): string {
@@ -1199,10 +1293,12 @@ function buildExportSections(data: PaperExportData): string[] {
       parts.push(buildCurrentRecordLatestRunSection(latestRecordRun));
       parts.push(buildCurrentRecordScannerSection(latestRecordRun, data.latestCandidates));
       parts.push(buildCurrentRecordRejectionSection(latestRecordRun));
-      parts.push(buildNewRecordTradeLogSection(data.activeRecord, data.trades));
+      parts.push(buildBlueprintExportSection(latestRecordRun));
+      parts.push(buildNewRecordTradeLogSection(data.activeRecord, data.currentRecordAccounting));
       parts.push(buildCarriedTradesExportSection(data.activeRecord, data.trades, markMap));
+      parts.push(buildCarriedClosedTradesExportSection(data.activeRecord, data.trades, markMap));
       parts.push(buildCurrentRecordOpenTradeReviewSection(data, markMap));
-      parts.push(buildCurrentRecordActivitySection(recordRuns));
+      parts.push(buildCurrentRecordActivitySection(recordRuns, data.currentRecordAccounting));
       parts.push(buildSystemStatusSection(data));
       parts.push(buildSafePathExportSection(data));
     }

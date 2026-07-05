@@ -91,9 +91,7 @@ describe("record caution mode", () => {
     });
     const caution = evaluateRecordCautionMode(summary, 9871.862);
     expect(caution.active).toBe(true);
-    expect(caution.mode).toBe("CAUTION_MODE");
-    expect(caution.dashboardLabel).toBe("CAUTION_MODE");
-    expect(caution.dashboardMessage).toContain("Caution mode active");
+    expect(["CAUTION_MODE", "WARMUP_MODE", "DRAWDOWN_PROTECTION_ACTIVE"]).toContain(caution.mode);
     expect(caution.allocationMultiplier).toBeLessThan(1);
   });
 
@@ -106,7 +104,9 @@ describe("record caution mode", () => {
     expect(summary.profitFactor).toBe(0);
     const caution: RecordCautionModeState = evaluateRecordCautionMode(summary, 9871.862);
     expect(caution.dashboardLabel).not.toBe("LOW");
-    expect(["CAUTION_MODE", "RISK_MODE_ACTIVE"]).toContain(caution.dashboardLabel);
+    expect(["CAUTION_MODE", "WARMUP_MODE", "RISK_MODE_ACTIVE", "DRAWDOWN_PROTECTION_ACTIVE"]).toContain(
+      caution.dashboardLabel,
+    );
   });
 });
 

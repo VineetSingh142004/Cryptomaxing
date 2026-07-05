@@ -1138,30 +1138,141 @@ export function DashboardShell() {
                     <p className="text-sm italic text-muted-foreground">
                       {data.paper_evidence.performanceSummary.simpleVerdict}
                     </p>
+                    {(
+                      data.paper_evidence as {
+                        recordVerdicts?: {
+                          totalRecordVerdict: { code: string; message: string };
+                          newTradesVerdict: { code: string; message: string };
+                          carriedTradesVerdict: { code: string; message: string };
+                        };
+                      }
+                    ).recordVerdicts && (
+                      <div className="space-y-1 text-xs border rounded p-2 bg-background/50">
+                        <p>
+                          <span className="font-medium">Total Record Verdict:</span>{" "}
+                          {
+                            (data.paper_evidence as { recordVerdicts?: { totalRecordVerdict: { code: string; message: string } } })
+                              .recordVerdicts!.totalRecordVerdict.code
+                          }
+                        </p>
+                        <p className="text-muted-foreground">
+                          {
+                            (data.paper_evidence as { recordVerdicts?: { totalRecordVerdict: { message: string } } })
+                              .recordVerdicts!.totalRecordVerdict.message
+                          }
+                        </p>
+                        <p>
+                          <span className="font-medium">New Trades Verdict:</span>{" "}
+                          {
+                            (data.paper_evidence as { recordVerdicts?: { newTradesVerdict: { code: string; message: string } } })
+                              .recordVerdicts!.newTradesVerdict.code
+                          }
+                        </p>
+                        <p className="text-muted-foreground">
+                          {
+                            (data.paper_evidence as { recordVerdicts?: { newTradesVerdict: { message: string } } })
+                              .recordVerdicts!.newTradesVerdict.message
+                          }
+                        </p>
+                        <p>
+                          <span className="font-medium">Carried Trades Verdict:</span>{" "}
+                          {
+                            (data.paper_evidence as { recordVerdicts?: { carriedTradesVerdict: { code: string; message: string } } })
+                              .recordVerdicts!.carriedTradesVerdict.code
+                          }
+                        </p>
+                        <p className="text-muted-foreground">
+                          {
+                            (data.paper_evidence as { recordVerdicts?: { carriedTradesVerdict: { message: string } } })
+                              .recordVerdicts!.carriedTradesVerdict.message
+                          }
+                        </p>
+                      </div>
+                    )}
+                    <p className="text-sm font-semibold pt-2">TOTAL RECORD PERFORMANCE (SIMULATED)</p>
                     <div className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
                       <p>
-                        <span className="text-muted-foreground">Starting balance:</span>{" "}
+                        <span className="text-muted-foreground">Starting equity:</span>{" "}
                         {fmtMetric(data.paper_evidence.performanceSummary.startingPaperBalance)} SIM
                       </p>
                       <p>
-                        <span className="text-muted-foreground">Current balance:</span>{" "}
+                        <span className="text-muted-foreground">Current equity:</span>{" "}
                         {fmtMetric(data.paper_evidence.performanceSummary.currentPaperBalance)} SIM
                       </p>
                       <p>
-                        <span className="text-muted-foreground">P&L since record start:</span>{" "}
+                        <span className="text-muted-foreground">Cash balance:</span>{" "}
+                        {fmtMetric(
+                          (
+                            data.paper_evidence.performanceSummary as {
+                              currentRecordAccounting?: { cashBalance: number };
+                            }
+                          ).currentRecordAccounting?.cashBalance ??
+                            data.paper_evidence.performanceSummary.startingPaperBalance +
+                              data.paper_evidence.performanceSummary.totalRealizedPnl,
+                        )}{" "}
+                        SIM
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Total record P&L:</span>{" "}
                         {data.paper_evidence.performanceSummary.totalNetPnl >= 0 ? "+" : ""}
                         {fmtMetric(data.paper_evidence.performanceSummary.totalNetPnl)} SIM
                       </p>
                       <p>
-                        <span className="text-muted-foreground">Realized P&L (new trades in record):</span>{" "}
+                        <span className="text-muted-foreground">Overall record status:</span>{" "}
+                        {(data.paper_evidence.performanceSummary as { overallRecordStatus?: string }).overallRecordStatus ??
+                          "UNKNOWN"}
+                      </p>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Total record P&L includes carried trade impact.
+                    </p>
+                    <p className="text-sm font-semibold pt-2">NEW TRADE PERFORMANCE (SIMULATED)</p>
+                    <div className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
+                      <p>
+                        <span className="text-muted-foreground">New realized P&L:</span>{" "}
                         {fmtMetric(data.paper_evidence.performanceSummary.totalRealizedPnl)} SIM
                       </p>
                       <p>
-                        <span className="text-muted-foreground">Unrealized P&L (new trades in record):</span>{" "}
+                        <span className="text-muted-foreground">New unrealized P&L:</span>{" "}
                         {fmtMetric(data.paper_evidence.performanceSummary.totalUnrealizedPnl)} SIM
                       </p>
                       <p>
-                        <span className="text-muted-foreground">Carried trade P&L since carry:</span>{" "}
+                        <span className="text-muted-foreground">New wins / losses:</span>{" "}
+                        {data.paper_evidence.performanceSummary.wins} / {data.paper_evidence.performanceSummary.losses}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">New trade win rate:</span>{" "}
+                        {(data.paper_evidence.performanceSummary as { newTradeWinRateLabel?: string }).newTradeWinRateLabel ??
+                          (data.paper_evidence.performanceSummary.winRate !== null
+                            ? `${(data.paper_evidence.performanceSummary.winRate * 100).toFixed(1)}%`
+                            : "Not enough data")}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">New profit factor:</span>{" "}
+                        {data.paper_evidence.performanceSummary.wins > 0 &&
+                        data.paper_evidence.performanceSummary.losses === 0
+                          ? "No losses yet — profit factor not meaningful"
+                          : data.paper_evidence.performanceSummary.profitFactor !== null
+                            ? fmtMetric(data.paper_evidence.performanceSummary.profitFactor)
+                            : "Not enough data"}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">New trades opened:</span>{" "}
+                        {(data.paper_evidence.performanceSummary as { newTradesOpened?: number }).newTradesOpened ?? 0}
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">Closed new trades:</span>{" "}
+                        {(data.paper_evidence.performanceSummary as { closedTradesInRecord?: number })
+                          .closedTradesInRecord ?? 0}
+                      </p>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      New-trade win rate excludes carried trades.
+                    </p>
+                    <p className="text-sm font-semibold pt-2">CARRIED TRADE PERFORMANCE (SIMULATED)</p>
+                    <div className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
+                      <p>
+                        <span className="text-muted-foreground">Carried P&L since carry:</span>{" "}
                         {fmtMetric(
                           (data.paper_evidence.performanceSummary as { carriedPnlSinceCarry?: number })
                             .carriedPnlSinceCarry ?? 0,
@@ -1169,69 +1280,89 @@ export function DashboardShell() {
                         SIM
                       </p>
                       <p>
-                        <span className="text-muted-foreground">New trades opened in this record:</span>{" "}
-                        {(data.paper_evidence.performanceSummary as { newTradesOpened?: number }).newTradesOpened ?? 0}
-                      </p>
-                      <p>
                         <span className="text-muted-foreground">Carried open trades:</span>{" "}
                         {data.paper_evidence.carriedOpenTradesCount ?? 0}
                       </p>
                       <p>
-                        <span className="text-muted-foreground">Closed trades in this record:</span>{" "}
-                        {(data.paper_evidence.performanceSummary as { closedTradesInRecord?: number })
-                          .closedTradesInRecord ?? 0}
+                        <span className="text-muted-foreground">Carried closed trades:</span>{" "}
+                        {(data.paper_evidence as { carriedTradeStats?: { closedCount: number } }).carriedTradeStats
+                          ?.closedCount ?? 0}
                       </p>
                       <p>
-                        <span className="text-muted-foreground">Wins in this record:</span>{" "}
-                        {data.paper_evidence.performanceSummary.wins}
+                        <span className="text-muted-foreground">Carried wins / losses:</span>{" "}
+                        {(data.paper_evidence as { carriedTradeStats?: { wins: number; losses: number } })
+                          .carriedTradeStats?.wins ?? 0}{" "}
+                        /{" "}
+                        {(data.paper_evidence as { carriedTradeStats?: { losses: number } }).carriedTradeStats
+                          ?.losses ?? 0}
                       </p>
-                      <p>
-                        <span className="text-muted-foreground">Losses in this record:</span>{" "}
-                        {data.paper_evidence.performanceSummary.losses}
-                      </p>
-                      <p>
-                        <span className="text-muted-foreground">Win rate in this record:</span>{" "}
-                        {data.paper_evidence.performanceSummary.winRate !== null
-                          ? `${(data.paper_evidence.performanceSummary.winRate * 100).toFixed(1)}%`
-                          : "Not enough data"}
-                      </p>
-                      <p>
-                        <span className="text-muted-foreground">Average win in this record:</span>{" "}
-                        {fmtMetric(data.paper_evidence.performanceSummary.averageWinningTrade)}
-                      </p>
-                      <p>
-                        <span className="text-muted-foreground">Average loss in this record:</span>{" "}
-                        {fmtMetric(data.paper_evidence.performanceSummary.averageLosingTrade)}
-                      </p>
-                      <p>
-                        <span className="text-muted-foreground">Expectancy in this record:</span>{" "}
-                        {fmtMetric(data.paper_evidence.performanceSummary.expectancyPerTrade)} SIM
-                      </p>
-                      <p>
-                        <span className="text-muted-foreground">Max drawdown in this record:</span>{" "}
-                        {fmtMetric(data.paper_evidence.performanceSummary.maxDrawdownSimulated)} SIM
-                      </p>
+                    </div>
+                    <p className="text-sm font-semibold pt-2">RISK MODE (SIMULATED)</p>
+                    <div className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
                       <p>
                         <span className="text-muted-foreground">Current risk mode:</span>{" "}
                         {data.paper_evidence.riskLevel ?? "UNKNOWN"}
                       </p>
                       {data.paper_evidence.recordCautionMode?.active && (
-                        <p className="text-amber-700 dark:text-amber-400">
+                        <p className="text-amber-700 dark:text-amber-400 sm:col-span-2">
                           {data.paper_evidence.recordCautionMode.dashboardMessage}
                         </p>
                       )}
-                      <p>
-                        <span className="text-muted-foreground">Profit factor in this record:</span>{" "}
-                        {data.paper_evidence.performanceSummary.profitFactor !== null
-                          ? fmtMetric(data.paper_evidence.performanceSummary.profitFactor)
-                          : "Not enough data"}
-                      </p>
-                      <p>
-                        <span className="text-muted-foreground">Status / verdict:</span>{" "}
-                        {(data.paper_evidence.performanceSummary as { freshRecordMessage?: string | null })
-                          .freshRecordMessage ??
-                          data.paper_evidence.performanceSummary.simpleVerdict}
-                      </p>
+                      {(
+                        data.paper_evidence.recordCautionMode as {
+                          triggerSource?: string;
+                          metricsUsed?: {
+                            newTradeLosses: number;
+                            carriedTradeLosses: number;
+                            allRecordLosses: number;
+                            recordPnl: number;
+                          };
+                        }
+                      )?.metricsUsed && (
+                        <>
+                          <p>
+                            <span className="text-muted-foreground">Trigger source:</span>{" "}
+                            {(
+                              data.paper_evidence.recordCautionMode as { triggerSource?: string }
+                            ).triggerSource ?? "unknown"}
+                          </p>
+                          <p className="sm:col-span-2">
+                            <span className="text-muted-foreground">Metrics used:</span> new losses{" "}
+                            {
+                              (
+                                data.paper_evidence.recordCautionMode as {
+                                  metricsUsed?: { newTradeLosses: number };
+                                }
+                              ).metricsUsed!.newTradeLosses
+                            }
+                            , carried losses{" "}
+                            {
+                              (
+                                data.paper_evidence.recordCautionMode as {
+                                  metricsUsed?: { carriedTradeLosses: number };
+                                }
+                              ).metricsUsed!.carriedTradeLosses
+                            }
+                            , all record losses{" "}
+                            {
+                              (
+                                data.paper_evidence.recordCautionMode as {
+                                  metricsUsed?: { allRecordLosses: number };
+                                }
+                              ).metricsUsed!.allRecordLosses
+                            }
+                            , record P&L{" "}
+                            {fmtMetric(
+                              (
+                                data.paper_evidence.recordCautionMode as {
+                                  metricsUsed?: { recordPnl: number };
+                                }
+                              ).metricsUsed!.recordPnl,
+                            )}{" "}
+                            SIM
+                          </p>
+                        </>
+                      )}
                     </div>
                     {data.paper_evidence.recordActivityCounts && (
                       <div className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2 border-t pt-2">
@@ -1239,6 +1370,61 @@ export function DashboardShell() {
                         <p>Trades updated in this record: {data.paper_evidence.recordActivityCounts.tradesUpdatedInRecord}</p>
                         <p>Candidates scanned in this record: {data.paper_evidence.recordActivityCounts.candidatesScannedInRecord}</p>
                         <p>Rejections in this record: {data.paper_evidence.recordActivityCounts.rejectionsInRecord}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && (data?.paper_evidence as { carriedClosedTradesDetail?: Array<{
+                  tradeId: string;
+                  symbol: string;
+                  side: string;
+                  originalEntryTime: string;
+                  carriedIntoRecordTime: string;
+                  exitTime: string;
+                  pnlSinceCarryDisplay: string;
+                  allTimePnl: number;
+                  exitReason: string | null;
+                  thesisStatus: string;
+                }> })?.carriedClosedTradesDetail && (
+                  <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-4 space-y-2">
+                    <p className="text-sm font-semibold">Carried Closed Trades (SIMULATED)</p>
+                    <p className="text-xs text-muted-foreground">
+                      Carried trades closed during this record — P&L since carry counts toward total record P&L.
+                    </p>
+                    {((data.paper_evidence as { carriedClosedTradesDetail?: unknown[] }).carriedClosedTradesDetail?.length ?? 0) === 0 ? (
+                      <p className="text-xs text-muted-foreground">No carried closed trades in this record.</p>
+                    ) : (
+                      <div className="space-y-2 text-xs">
+                        {(
+                          data.paper_evidence as {
+                            carriedClosedTradesDetail: Array<{
+                              tradeId: string;
+                              symbol: string;
+                              side: string;
+                              originalEntryTime: string;
+                              carriedIntoRecordTime: string;
+                              exitTime: string;
+                              pnlSinceCarryDisplay: string;
+                              allTimePnl: number;
+                              exitReason: string | null;
+                              thesisStatus: string;
+                            }>;
+                          }
+                        ).carriedClosedTradesDetail.map((t) => (
+                          <div key={t.tradeId} className="rounded border p-2">
+                            <p className="font-medium">
+                              {t.symbol} {t.side}
+                            </p>
+                            <p>Original entry: {new Date(t.originalEntryTime).toLocaleString()}</p>
+                            <p>Carried into record: {new Date(t.carriedIntoRecordTime).toLocaleString()}</p>
+                            <p>Exit: {new Date(t.exitTime).toLocaleString()}</p>
+                            <p>P&L since carry: {t.pnlSinceCarryDisplay} SIM</p>
+                            <p>All-time P&L: {fmtMetric(t.allTimePnl)} SIM</p>
+                            <p>Exit reason: {t.exitReason ?? "UNKNOWN"}</p>
+                            <p>Thesis status: {t.thesisStatus}</p>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -1317,6 +1503,20 @@ export function DashboardShell() {
                       );})}
                     </div>
                     )}
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.whyNoTradeReport && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Why No Trade Opened (SIMULATED)</p>
+                    <p className="text-xs">{data.paper_evidence.whyNoTradeReport.finalReason}</p>
+                  </div>
+                )}
+
+                {isCurrentRecordView && data?.paper_evidence?.tradeFrequencyHealth && (
+                  <div className="rounded-lg border p-4 space-y-2">
+                    <p className="text-sm font-semibold">Trade Frequency Health (SIMULATED)</p>
+                    <p className="text-xs">{data.paper_evidence.tradeFrequencyHealth.recommendation}</p>
                   </div>
                 )}
 
@@ -1711,6 +1911,29 @@ export function DashboardShell() {
                       Clean Fresh Start (require no open trades)
                     </label>
                   </div>
+                  <p className="text-xs">
+                    Clean Fresh Start available:{" "}
+                    {(data?.paper_evidence as { cleanFreshStart?: { available: boolean } })?.cleanFreshStart?.available
+                      ? "YES"
+                      : "NO"}
+                  </p>
+                  {(data?.paper_evidence as {
+                    cleanFreshStart?: { blockingOpenTradeCount: number; blockingSymbols: string[] };
+                  })?.cleanFreshStart &&
+                    !(data.paper_evidence as { cleanFreshStart?: { available: boolean } }).cleanFreshStart!.available && (
+                      <p className="text-xs text-amber-700 dark:text-amber-400">
+                        Blocking open trades:{" "}
+                        {
+                          (data.paper_evidence as { cleanFreshStart?: { blockingOpenTradeCount: number } })
+                            .cleanFreshStart!.blockingOpenTradeCount
+                        }{" "}
+                        (
+                        {(
+                          data.paper_evidence as { cleanFreshStart?: { blockingSymbols: string[] } }
+                        ).cleanFreshStart!.blockingSymbols.join(", ") || "unknown"}
+                        )
+                      </p>
+                    )}
                   <Button
                     size="sm"
                     variant="outline"

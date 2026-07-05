@@ -76,10 +76,18 @@ import { buildPaperTradeHistory } from "@/lib/trading/paper/trade-history";
 import { verifyPaperSafetyGates } from "@/lib/trading/paper/safety-verification";
 import {
   evaluateThesisInvalidation,
+  evaluateOpenTradeThesisReview,
   mapLegacyCloseReason,
   formatThesisExitLabel,
   type PaperExitReason,
 } from "@/lib/trading/paper/thesis-invalidation";
+import { evaluateBlueprintExit, type BlueprintExitReason } from "@/lib/trading/paper/blueprint-exit-engine";
+import { evaluateProfitLockState, evaluateRecordProfitLock } from "@/lib/trading/paper/profit-lock-engine";
+import { evaluateOpportunityCost } from "@/lib/trading/paper/opportunity-cost-engine";
+import { buildWhyNoTradeReport } from "@/lib/trading/paper/why-no-trade-report";
+import { evaluateTradeFrequencyHealth } from "@/lib/trading/paper/trade-frequency-health";
+import { buildPaperBrokerRealismStatus } from "@/lib/trading/paper/paper-broker-realism";
+import { blockIfNoBlueprintStrategy, mapStrategyForCandidate } from "@/lib/trading/paper/strategy-mapping";
 import { explainLosingTrade } from "@/lib/trading/paper/risk-explanation";
 import { PAPER_RISK_CONFIG, serializePaperRiskConfig } from "@/lib/trading/paper/paper-risk-config";
 import { buildActiveTradingRules } from "@/lib/trading/paper/active-trading-rules";
@@ -127,7 +135,7 @@ import {
   sumRecordRejectionCounts,
   type RecordScopedEntity,
 } from "@/lib/trading/paper/paper-record";
-import { evaluateOpenTradeThesisReview } from "@/lib/trading/paper/thesis-invalidation";
+import { computeCarriedTradeStats } from "@/lib/trading/paper/record-accounting";
 
 export type PaperRunAction =
   | "PAPER_TRADE_OPENED"
@@ -303,6 +311,11 @@ async function updateOpenTrade(
   markPrice: number,
   now: Date,
   snapshot?: NormalizedMarketSnapshot,
+  options?: {
+    runsHeld?: number;
+    peakUnrealizedPnl?: number;
+    bestCandidate?: ScanCandidate | null;
+  },
 ): Promise<{
   action: PaperRunAction;
   trade: DbPaperTrade;
@@ -383,7 +396,75 @@ async function updateOpenTrade(
 
   let riskExplanation: string | null = null;
 
-  if (!shouldClose && snapshot && entry !== null) {
+  const hasMarketData = Boolean(snapshot && snapshot.candles5m.length >= 3);
+  const thesisReview =
+    snapshot && entry !== null
+      ? evaluateOpenTradeThesisReview({
+          side: trade.side,
+          entryPrice: entry,
+          markPrice,
+          snapshot,
+          hasMarketData,
+          dataSource: snapshot.source ?? "kraken",
+        })
+      : null;
+
+  const profitLock = evaluateProfitLockState({
+    side: trade.side === "SHORT" ? "SHORT" : "LONG",
+    entryPrice: entry,
+    markPrice,
+    plannedTakeProfit: tp,
+    currentUnrealizedPnl: unrealized,
+    peakUnrealizedPnl: options?.peakUnrealizedPnl,
+  });
+
+  const blueprintExit = evaluateBlueprintExit({
+    side: trade.side,
+    entryPrice: entry,
+    markPrice,
+    plannedStopLoss: stop,
+    plannedTakeProfit: tp,
+    openedAt: trade.openedAt ?? now,
+    now,
+    runsHeld: options?.runsHeld ?? 1,
+    snapshot: snapshot ?? null,
+    hasMarketData,
+    thesisStatus: thesisReview?.status ?? "UNKNOWN_NEEDS_DATA",
+    thesisRecommendation: thesisReview?.recommendation ?? "NEEDS_MORE_DATA",
+    unrealizedPnl: unrealized,
+    peakUnrealizedPnl: profitLock.peakUnrealizedPnl,
+    profitLock,
+  });
+
+  const oppCost = evaluateOpportunityCost({
+    openTrade: {
+      symbol: trade.symbol,
+      side: trade.side === "SHORT" ? "SHORT" : "LONG",
+      entryPrice: entry,
+      markPrice,
+      unrealizedPnl: unrealized,
+      tpProgressPct: blueprintExit.distanceToTpPct,
+      thesisStatus: thesisReview?.status ?? "UNKNOWN_NEEDS_DATA",
+      staleTrade: blueprintExit.staleTrade,
+      ageHours: trade.openedAt
+        ? (now.getTime() - trade.openedAt.getTime()) / 3_600_000
+        : 0,
+      capitalLockedUsd: Math.abs(entry * size),
+      opportunityScoreAtEntry: null,
+    },
+    bestCandidate: options?.bestCandidate ?? null,
+  });
+
+  if (!shouldClose && (blueprintExit.shouldExit || oppCost.shouldExitForBetterSetup)) {
+    shouldClose = true;
+    exitPrice = blueprintExit.exitPrice ?? markPrice;
+    closeReason = (oppCost.shouldExitForBetterSetup
+      ? "OPPORTUNITY_COST_EXIT"
+      : blueprintExit.exitReason ?? "TRUE_INVALIDATION_EXIT") as PaperExitReason;
+    riskExplanation = oppCost.shouldExitForBetterSetup
+      ? oppCost.summary
+      : blueprintExit.summary;
+  } else if (!shouldClose && snapshot && entry !== null) {
     const thesis = evaluateThesisInvalidation({
       side: trade.side,
       entryPrice: entry,
@@ -414,6 +495,10 @@ async function updateOpenTrade(
           : ((entry - markPrice) / entry) * 10_000;
       if (pnlBps < -5) {
         riskExplanation = explanation.summary;
+      } else if (profitLock.profitLockLabel !== "NONE") {
+        riskExplanation = profitLock.summary;
+      } else if (thesisReview?.recommendation === "NEEDS_MORE_DATA") {
+        riskExplanation = thesisReview.reasons.join("; ");
       }
     }
   }
@@ -442,6 +527,22 @@ async function updateOpenTrade(
                 "LIQUIDITY_WEAKENING",
                 "SELL_PRESSURE_INCREASED",
                 "MARKET_RISK_INCREASED",
+                "TRUE_INVALIDATION_EXIT",
+                "WEAK_THESIS_EXIT",
+                "STALE_TRADE_EXIT",
+                "NEAR_STOP_EXIT",
+                "STOP_DANGER_EXIT",
+                "MARKET_TURNED_EXIT",
+                "VOLUME_FADE_EXIT",
+                "SPREAD_WIDEN_EXIT",
+                "LIQUIDITY_DROP_EXIT",
+                "UNKNOWN_THESIS_EXIT",
+                "STALE_DATA_EXIT",
+                "TRADE_PROFIT_GIVEBACK_EXIT",
+                "OPPORTUNITY_COST_EXIT",
+                "BETTER_SETUP_ROTATION_EXIT",
+                "CAPITAL_LOCKUP_EXIT",
+                "LOW_PROFIT_DENSITY_EXIT",
               ].includes(mappedReason)
             ? "LOSS"
             : classifyResult(pnl.net);
@@ -1363,6 +1464,12 @@ export async function getPaperStatus() {
     latestRunAt: latestRun?.startedAt ?? null,
   });
   const carriedOpenTradesDetail = buildCarriedTradeSnapshots(allTrades, markMap);
+  const newTradesClosedCount = newTrades.filter(
+    (t) => t.status === "CLOSED" || t.status === "EXPIRED",
+  ).length;
+  const carriedTradesClosedCount = carried.filter(
+    (t) => t.status === "CLOSED" || t.status === "EXPIRED",
+  ).length;
   const recordActivityCounts = {
     runsCompletedInRecord: recordScopedRuns.filter((r) => r.status === "COMPLETED").length,
     tradesUpdatedInRecord: recordScopedRuns.reduce((sum, r) => sum + (r.tradesUpdated ?? 0), 0),
@@ -1371,7 +1478,10 @@ export async function getPaperStatus() {
     newTradesOpenedInRecord: recordMetrics.newTradesOpened,
     carriedTradesMonitored: recordMetrics.carriedOpenTrades,
   };
-  const recordActivityFeed = buildRecordActivityFeed(recordScopedRuns, 10);
+  const recordActivityFeed = buildRecordActivityFeed(recordScopedRuns, 10, {
+    newTradesClosedInRecord: newTradesClosedCount,
+    carriedTradesClosedInRecord: carriedTradesClosedCount,
+  });
   const botHealthCheck = buildRecordBotHealthCheck({
     latestRun: latestRun
       ? {
@@ -1485,7 +1595,18 @@ export async function getPaperStatus() {
     recordMetrics.startingPaperBalance ??
     toNumber(activeRecord.startingPaperBalance) ??
     SCANNER_CONFIG.simulatedAccountUsd;
-  const recordCautionMode = evaluateRecordCautionMode(performanceSummary, recordStartingBalance);
+  const newTradesPerformanceSummary = buildPaperPerformanceSummary({
+    trades: newTrades,
+    latestMarkByTradeId: markMap,
+    maxDrawdown: stats.maxDrawdown,
+  });
+  const recordCautionMode = evaluateRecordCautionMode(newTradesPerformanceSummary, recordStartingBalance, {
+    recordPnl: recordMetrics.recordPnl,
+    newTradeLosses: recordMetrics.losses,
+    carriedTradeLosses: recordMetrics.carriedTradeStats.losses,
+    allRecordLosses: recordMetrics.losses + recordMetrics.carriedTradeStats.losses,
+    carriedPnlSinceCarry: recordMetrics.carriedPnlSinceCarry,
+  });
   const closedNewLosers = newTrades.filter(
     (t) => t.status === "CLOSED" && (t.result === "LOSS" || (toNumber(t.netPaperPnl) ?? 0) < 0),
   );
@@ -1513,6 +1634,25 @@ export async function getPaperStatus() {
       number
     >) ?? {};
   const latestRunRejectionCategories = summarizeRejectionCategories(latestRunRejectionSummary);
+  const whyNoTradeReport =
+    (latestRunSummary.whyNoTradeReport as ReturnType<typeof buildWhyNoTradeReport> | undefined) ??
+    null;
+  const tradeFrequencyHealth = evaluateTradeFrequencyHealth({
+    runsCompleted: recordScopedRuns.filter((r) => r.status === "COMPLETED").length,
+    candidatesScanned: recordStats.candidatesStored,
+    candidatesEvaluated: recordStats.candidatesStored,
+    tradesOpened: recordMetrics.newTradesOpened,
+    tradesClosed: recordMetrics.closedTradesInRecord,
+    rejections: sumRecordRejectionCounts(recordScopedRuns),
+    noTradeRuns: recordScopedRuns.filter((r) => r.tradesOpened === 0).length,
+    averageHoldingHours: performanceSummary.averageTradeDurationHours,
+    openSlotsUsed: recordMetrics.totalOpenTrades,
+    maxOpenSlots: maxOpenTrades,
+  });
+  const paperBrokerRealism = buildPaperBrokerRealismStatus();
+  const recordProfitLock = evaluateRecordProfitLock({
+    openTradesUnrealized: recordOpenTrades.map((t) => t.allTimePnl ?? 0),
+  });
   const latestRunPnl = latestRun
     ? await resolveLatestRunPnlFromDb(userId, latestRun, latestRunSummary)
     : null;
@@ -1554,6 +1694,7 @@ export async function getPaperStatus() {
         rejectionSummary: latestRunRejectionSummary,
         rejectionCategories: latestRunRejectionCategories,
         bestDecision:
+          whyNoTradeReport?.finalReason ??
           recordScanner?.whyNoTrade?.topReasons?.[0]?.reason ??
           (latestRun.tradesOpened > 0 ? "OPEN_PAPER_TRADE" : "NO_TRADE_BEST_DECISION"),
         emptyMessage: null as string | null,
@@ -1628,6 +1769,10 @@ export async function getPaperStatus() {
     riskLevel,
     recordCautionMode,
     recordLossAudits,
+    tradeFrequencyHealth,
+    whyNoTradeReport,
+    paperBrokerRealism,
+    recordProfitLock,
     riskConfig: serializePaperRiskConfig(),
     dataTruth: {
       marketData: DATA_TRUTH.realMarketData(),
@@ -1676,6 +1821,10 @@ export async function getPaperStatus() {
     recordComparison,
     carriedOpenTradesCount: recordMetrics.carriedOpenTrades,
     carriedOpenTradesDetail,
+    carriedClosedTradesDetail: recordMetrics.carriedClosedTradesDetail,
+    carriedTradeStats: recordMetrics.carriedTradeStats,
+    recordVerdicts: recordMetrics.recordVerdicts,
+    cleanFreshStart: recordMetrics.cleanFreshStart,
     recordActivityCounts,
     recordActivityFeed,
     botHealthCheck,
@@ -1738,14 +1887,22 @@ export async function runPaperEvidenceStep(options?: {
     orderBy: { createdAt: "desc" },
     take: 200,
   });
+  const { newTrades: cautionNewTrades, carried: cautionCarried } = splitRecordTrades(recordTradesForCaution);
   const recordPerfForCaution = buildPaperPerformanceSummary({
-    trades: recordTradesForCaution,
+    trades: cautionNewTrades,
     latestMarkByTradeId: new Map(),
     maxDrawdown: null,
   });
+  const carriedStatsForCaution = computeCarriedTradeStats(cautionCarried, new Map());
   const recordCaution = evaluateRecordCautionMode(
     recordPerfForCaution,
     toNumber(activeRecord.startingPaperBalance) ?? SCANNER_CONFIG.simulatedAccountUsd,
+    {
+      newTradeLosses: recordPerfForCaution.losses,
+      carriedTradeLosses: carriedStatsForCaution.losses,
+      allRecordLosses: recordPerfForCaution.losses + carriedStatsForCaution.losses,
+      carriedPnlSinceCarry: carriedStatsForCaution.totalPnlSinceCarry,
+    },
   );
   const recordCautionSelection = recordCaution.active
     ? {
@@ -1885,6 +2042,12 @@ export async function runPaperEvidenceStep(options?: {
 
   const openTrades = await prisma.paperTrade.findMany({
     where: { userId, status: "OPEN" },
+    include: {
+      snapshots: {
+        select: { unrealizedPnl: true },
+        orderBy: { capturedAt: "asc" },
+      },
+    },
   });
 
   const allTradesBeforeRun = await prisma.paperTrade.findMany({ where: { userId } });
@@ -1906,11 +2069,20 @@ export async function runPaperEvidenceStep(options?: {
       const snapshot = await fetchSnapshot(trade.symbol);
       successfulFetches++;
       const mark = (snapshot.ticker.bid + snapshot.ticker.ask) / 2;
+      const peakUnrealized = trade.snapshots.reduce((max, s) => {
+        const v = toNumber(s.unrealizedPnl) ?? 0;
+        return Math.max(max, v);
+      }, 0);
       const { action, snapshotStored, snapshotError } = await updateOpenTrade(
         trade,
         mark,
         now,
         snapshot,
+        {
+          runsHeld: trade.snapshots.length + 1,
+          peakUnrealizedPnl: peakUnrealized,
+          bestCandidate: null,
+        },
       );
       actions.push(mapPaperRunActionToExecution(action) as PaperRunAction);
       latestAction = mapPaperRunActionToExecution(action) as PaperRunAction;
@@ -2175,6 +2347,19 @@ export async function runPaperEvidenceStep(options?: {
   for (const candidate of topToEvaluate) {
     if (newTradesThisRun >= SCANNER_CONFIG.maxNewTradesPerRun) break;
 
+    if (recordCaution.pauseNewEntries) {
+      tradeReadyNotOpenedSymbols.add(candidate.symbol);
+      noTradeCount++;
+      continue;
+    }
+
+    const blueprintStrategy = blockIfNoBlueprintStrategy(candidate);
+    if (blueprintStrategy.blocked) {
+      tradeReadyNotOpenedSymbols.add(candidate.symbol);
+      noTradeCount++;
+      continue;
+    }
+
     const existingOpen = activeOpenTrades.find((t) => t.symbol === candidate.symbol);
     if (existingOpen) {
       noTradeCount++;
@@ -2309,6 +2494,7 @@ export async function runPaperEvidenceStep(options?: {
       allocationMultiplier: recordCaution.active ? recordCaution.allocationMultiplier : 1,
     });
     const { baseAsset, quoteAsset } = parseSymbol(candidate.symbol);
+    const mappedStrategy = blueprintStrategy.mapping;
 
     const signal = await prisma.paperSignal.create({
       data: {
@@ -2318,11 +2504,11 @@ export async function runPaperEvidenceStep(options?: {
         strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
         symbol: candidate.symbol,
         side: (strategy.decision === "NO_TRADE" ? "NO_TRADE" : strategy.decision) as PaperTradeSide,
-        strategyName: PAPER_CONFIG.strategyName,
+        strategyName: mappedStrategy.strategyName,
         confidence: strategy.confidence,
         reason: isRotationEntry
-          ? `PAPER_ROTATION_ENTRY: ${strategy.reasonCode}: ${strategy.reason}`
-          : `${strategy.reasonCode}: ${strategy.reason}`,
+          ? `PAPER_ROTATION_ENTRY: ${strategy.reasonCode}: ${strategy.reason} | ${mappedStrategy.strategyId}`
+          : `${strategy.reasonCode}: ${strategy.reason} | ${mappedStrategy.strategyId}`,
         noTrade: strategy.decision === "NO_TRADE",
         marketPrice: candidate.price,
       },
@@ -2340,7 +2526,7 @@ export async function runPaperEvidenceStep(options?: {
           baseAsset,
           quoteAsset,
           side: "NO_TRADE",
-          strategyName: PAPER_CONFIG.strategyName,
+          strategyName: mappedStrategy.strategyName,
           status: "NO_TRADE",
           result: "NO_TRADE",
           confidence: strategy.confidence,
@@ -2366,7 +2552,7 @@ export async function runPaperEvidenceStep(options?: {
         baseAsset,
         quoteAsset,
         side: strategy.decision as PaperTradeSide,
-        strategyName: PAPER_CONFIG.strategyName,
+        strategyName: mappedStrategy.strategyName,
         entryPrice: strategy.entryPrice,
         plannedStopLoss: strategy.plannedStopLoss,
         plannedTakeProfit: strategy.plannedTakeProfit,
@@ -2378,8 +2564,8 @@ export async function runPaperEvidenceStep(options?: {
         result: "OPEN",
         confidence: strategy.confidence,
         reason: strategy.warning
-          ? `${strategy.warning}: ${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`
-          : `${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`,
+          ? `${strategy.warning}: ${mappedStrategy.strategyName} — ${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`
+          : `${mappedStrategy.strategyName} — ${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`,
         dataSource: "kraken",
         isRealTrade: false,
         isVerifiedLivePnl: false,
@@ -2487,6 +2673,17 @@ export async function runPaperEvidenceStep(options?: {
     where: { userId, status: { in: ["CLOSED", "EXPIRED"] } },
   });
 
+  const whyNoTradeReport = buildWhyNoTradeReport({
+    tradesOpenedThisRun: tradesOpened,
+    ranked,
+    rejectionSummary,
+    openTradesCount: openTradesAfter,
+    availableSlots: Math.max(0, effectiveMaxOpenTrades - openTradesAfter),
+    riskMode: recordCaution.dashboardLabel,
+    recordCaution,
+    totalCandidates: ranked.length,
+  });
+
   const databaseWriteFailed =
     candidateWriteFailures > 0 && candidatesStored === 0 && ranked.length > 0;
   const snapshotWriteFailed = snapshotWriteFailures > 0 && snapshotsStored === 0 && tradesUpdated > 0;
@@ -2545,7 +2742,9 @@ export async function runPaperEvidenceStep(options?: {
   }
 
   const reasonText =
-    runStatus === "NOOP"
+    whyNoTradeReport && reasonCode === "NO_TRADE_BEST_DECISION"
+      ? whyNoTradeReport.finalReason
+      : runStatus === "NOOP"
       ? `Run completed but no new evidence was stored beyond the run record.`
       : runStatus === "PARTIAL"
         ? candidateWriteFailures > 0
@@ -2622,6 +2821,7 @@ export async function runPaperEvidenceStep(options?: {
       staleSymbolCount,
       scanSummary: {
         rejectionSummary,
+        whyNoTradeReport,
         marketDataStatus,
         coingeckoStatus: wideResult.coingeckoStatus,
         krakenStatus: wideResult.krakenStatus,

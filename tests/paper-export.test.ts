@@ -356,7 +356,7 @@ describe("buildPaperExportLog", () => {
     expect(text).toContain("SECTION 8 — CURRENT RECORD ACTIVITY FEED");
     expect(text).toContain("SECTION 9 — DATA QUALITY NOTES");
     expect(text).toContain("Runs completed in this record");
-    expect(text).toContain("Carried trades being monitored");
+    expect(text).toContain("Carried trades monitored");
   });
 });
 

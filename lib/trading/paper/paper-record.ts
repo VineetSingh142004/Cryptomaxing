@@ -8,6 +8,16 @@ import {
   type PaperPerformanceSummary,
 } from "@/lib/trading/paper/performance-summary";
 import { CURRENT_PAPER_STRATEGY_VERSION } from "@/lib/trading/paper/paper-strategy-version";
+import {
+  buildCarriedClosedTradeSnapshots,
+  buildCleanFreshStartStatus,
+  buildRecordVerdicts,
+  computeCarriedTradeStats,
+  type CarriedClosedTradeSnapshot,
+  type CarriedTradeStats,
+  type CleanFreshStartStatus,
+  type RecordVerdictBundle,
+} from "@/lib/trading/paper/record-accounting";
 
 export const CARRIED_FROM_PREVIOUS_RECORD = "CARRIED_FROM_PREVIOUS_RECORD";
 export const LEGACY_RECORD_NAME = "Legacy Record";
@@ -68,7 +78,8 @@ export interface RecordActivityEvent {
     | "TRADE_CLOSED"
     | "REJECTION_SUMMARY"
     | "CARRIED_TRADE_UPDATED"
-    | "THESIS_INVALIDATED";
+    | "THESIS_INVALIDATED"
+    | "ACCOUNTING_SYNC";
   timestamp: string;
   summary: string;
   simulatedLabel: "SIMULATED_PAPER_ONLY";
@@ -113,6 +124,196 @@ export interface RecordPerformanceBreakdown {
   newOpenTrades: number;
 }
 
+export interface CurrentRecordTradeDetail {
+  tradeId: string;
+  symbol: string;
+  side: string;
+  status: string;
+  isCarried: boolean;
+  entryTime: string | null;
+  entryPrice: number;
+  currentPrice: number;
+  quantity: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  recordPnlSinceStart: number;
+  strategyName: string;
+  exitReason: string | null;
+  thesisStatus: string;
+  distanceToTpPct: string | null;
+  distanceToSlPct: string | null;
+  simulatedLabel: "SIMULATED_PAPER_ONLY";
+}
+
+/** Single source of truth for current-record dashboard + export accounting. */
+export interface CurrentRecordAccounting {
+  recordId: string;
+  startingEquity: number;
+  currentEquity: number;
+  cashBalance: number;
+  totalRecordPnl: number;
+  newRealizedPnl: number;
+  newUnrealizedPnl: number;
+  carriedRealizedPnl: number;
+  carriedUnrealizedPnl: number;
+  carriedTotalPnl: number;
+  newTradesOpened: number;
+  newOpenTrades: number;
+  newClosedTrades: number;
+  carriedOpenTrades: number;
+  carriedClosedTrades: number;
+  totalOpenTrades: number;
+  totalClosedTrades: number;
+  newWins: number;
+  newLosses: number;
+  newBreakevens: number;
+  carriedWins: number;
+  carriedLosses: number;
+  newOpenTradeDetails: CurrentRecordTradeDetail[];
+  newClosedTradeDetails: CurrentRecordTradeDetail[];
+  carriedOpenTradeDetails: CurrentRecordTradeDetail[];
+  carriedClosedTradeDetails: CarriedClosedTradeSnapshot[];
+  cleanFreshStart: CleanFreshStartStatus;
+  simulatedLabel: "SIMULATED_PAPER_ONLY";
+}
+
+type OpenTradeWithSnap = DbPaperTrade & {
+  snapshots?: Array<{ markPrice: unknown; unrealizedPnl?: unknown }>;
+};
+
+export function buildRecordMarkMap(
+  recordTrades: DbPaperTrade[],
+  openTradesWithSnaps?: OpenTradeWithSnap[],
+): Map<string, number> {
+  const markMap = new Map<string, number>();
+  const snapById = new Map(openTradesWithSnaps?.map((t) => [t.id, t]) ?? []);
+  for (const trade of recordTrades) {
+    if (trade.status !== "OPEN" || trade.side === "NO_TRADE") continue;
+    const withSnap = snapById.get(trade.id);
+    const snap = withSnap?.snapshots?.[0];
+    const mark = snap ? toNumber(snap.markPrice) : toNumber(trade.entryPrice);
+    if (mark > 0) markMap.set(trade.id, mark);
+  }
+  return markMap;
+}
+
+function buildTradeDetail(
+  trade: DbPaperTrade,
+  markMap: Map<string, number>,
+  isCarried: boolean,
+): CurrentRecordTradeDetail {
+  const entry = toNumber(trade.entryPrice);
+  const mark =
+    trade.status === "OPEN"
+      ? (markMap.get(trade.id) ?? entry)
+      : toNumber(trade.exitPrice) ?? entry;
+  const quantity = toNumber(trade.simulatedSize);
+  const unrealized =
+    trade.status === "OPEN" ? computeUnrealizedForTrade(trade, mark > 0 ? mark : null) : 0;
+  const realized =
+    trade.status === "CLOSED" || trade.status === "EXPIRED" ? toNumber(trade.netPaperPnl) : 0;
+  let recordPnlSinceStart = isCarried ? 0 : realized + unrealized;
+  if (isCarried) {
+    const baseline = carriedBaselineUnrealized(trade);
+    if (baseline !== null) {
+      recordPnlSinceStart =
+        trade.status === "OPEN"
+          ? unrealized - baseline
+          : toNumber(trade.netPaperPnl) - baseline;
+    }
+  }
+  const tp = toNumber(trade.plannedTakeProfit);
+  const sl = toNumber(trade.plannedStopLoss);
+  const exitMatch = trade.reason.match(/\|\s*closed:\s*([^|]+)/i);
+  return {
+    tradeId: trade.id,
+    symbol: trade.symbol,
+    side: trade.side,
+    status: trade.status,
+    isCarried,
+    entryTime: (trade.openedAt ?? trade.createdAt)?.toISOString() ?? null,
+    entryPrice: entry,
+    currentPrice: mark,
+    quantity,
+    unrealizedPnl: unrealized,
+    realizedPnl: realized,
+    recordPnlSinceStart,
+    strategyName: trade.strategyName,
+    exitReason: exitMatch ? exitMatch[1].trim() : null,
+    thesisStatus: trade.result ?? (trade.status === "OPEN" ? "OPEN" : "UNKNOWN"),
+    distanceToTpPct:
+      entry > 0 && tp && mark ? (((tp - mark) / entry) * 100).toFixed(2) : null,
+    distanceToSlPct:
+      entry > 0 && sl && mark ? (((mark - sl) / entry) * 100).toFixed(2) : null,
+    simulatedLabel: "SIMULATED_PAPER_ONLY",
+  };
+}
+
+export function buildCurrentRecordAccounting(input: {
+  record: Pick<PaperRecord, "id" | "startingPaperBalance">;
+  recordTrades: DbPaperTrade[];
+  allTrades?: DbPaperTrade[];
+  openTradesWithSnaps?: OpenTradeWithSnap[];
+  markMap?: Map<string, number>;
+}): CurrentRecordAccounting {
+  const markMap = input.markMap ?? buildRecordMarkMap(input.recordTrades, input.openTradesWithSnaps);
+  const breakdown = computeRecordPerformanceBreakdown({
+    record: input.record as PaperRecord,
+    recordTrades: input.recordTrades,
+    allTrades: input.allTrades,
+    markMap,
+  });
+  const { carried, newTrades } = splitRecordTrades(input.recordTrades);
+  const newSummary = buildPaperPerformanceSummary({ trades: newTrades, latestMarkByTradeId: markMap });
+  const carriedStats = computeCarriedTradeStats(carried, markMap);
+  const activeOpenTrades = input.recordTrades.filter(
+    (t) => t.status === "OPEN" && t.side !== "NO_TRADE",
+  );
+
+  const newOpenTradeDetails = newTrades
+    .filter((t) => t.status === "OPEN" && isActionableTrade(t))
+    .map((t) => buildTradeDetail(t, markMap, false));
+  const newClosedTradeDetails = newTrades
+    .filter((t) => (t.status === "CLOSED" || t.status === "EXPIRED") && isActionableTrade(t))
+    .map((t) => buildTradeDetail(t, markMap, false));
+  const carriedOpenTradeDetails = carried
+    .filter((t) => t.status === "OPEN")
+    .map((t) => buildTradeDetail(t, markMap, true));
+
+  const cashBalance = breakdown.startingPaperBalance + breakdown.newRecordRealizedPnl + carriedStats.realizedPnlSinceCarry;
+
+  return {
+    recordId: input.record.id,
+    startingEquity: breakdown.startingPaperBalance,
+    currentEquity: breakdown.currentPaperBalance,
+    cashBalance,
+    totalRecordPnl: breakdown.recordPnl,
+    newRealizedPnl: breakdown.newRecordRealizedPnl,
+    newUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
+    carriedRealizedPnl: carriedStats.realizedPnlSinceCarry,
+    carriedUnrealizedPnl: carriedStats.unrealizedPnlSinceCarry,
+    carriedTotalPnl: breakdown.carriedPnlSinceCarry,
+    newTradesOpened: breakdown.newTradesOpened,
+    newOpenTrades: breakdown.newOpenTrades,
+    newClosedTrades: breakdown.closedTradesInRecord,
+    carriedOpenTrades: breakdown.carriedOpenTrades,
+    carriedClosedTrades: carriedStats.closedCount,
+    totalOpenTrades: breakdown.newOpenTrades + breakdown.carriedOpenTrades,
+    totalClosedTrades: breakdown.closedTradesInRecord + carriedStats.closedCount,
+    newWins: newSummary.wins,
+    newLosses: newSummary.losses,
+    newBreakevens: newSummary.breakevens,
+    carriedWins: carriedStats.wins,
+    carriedLosses: carriedStats.losses,
+    newOpenTradeDetails,
+    newClosedTradeDetails,
+    carriedOpenTradeDetails,
+    carriedClosedTradeDetails: buildCarriedClosedTradeSnapshots(carried, markMap),
+    cleanFreshStart: buildCleanFreshStartStatus(activeOpenTrades),
+    simulatedLabel: "SIMULATED_PAPER_ONLY",
+  };
+}
+
 export interface PaperRecordMetrics extends PaperPerformanceSummary {
   recordId: string;
   recordNumber: number;
@@ -136,6 +337,13 @@ export interface PaperRecordMetrics extends PaperPerformanceSummary {
   scopeLabel: "CURRENT_RECORD";
   simulatedLabel: "SIMULATED_PAPER_ONLY";
   freshRecordMessage: string | null;
+  recordVerdicts: RecordVerdictBundle;
+  carriedTradeStats: CarriedTradeStats;
+  carriedClosedTradesDetail: CarriedClosedTradeSnapshot[];
+  cleanFreshStart: CleanFreshStartStatus;
+  newTradeWinRateLabel: string;
+  overallRecordStatus: string;
+  currentRecordAccounting: CurrentRecordAccounting;
 }
 
 export interface PaperRecordHistoryRow extends SerializedPaperRecord {
@@ -458,8 +666,14 @@ export async function buildRecordMetrics(input: {
   latestMarkByTradeId?: Map<string, number>;
   latestRunAt?: Date | null;
 }): Promise<PaperRecordMetrics> {
-  const markMap = input.latestMarkByTradeId ?? new Map<string, number>();
-  const { newTrades } = splitRecordTrades(input.trades);
+  const markMap = input.latestMarkByTradeId ?? buildRecordMarkMap(input.trades);
+  const accounting = buildCurrentRecordAccounting({
+    record: input.record,
+    recordTrades: input.trades,
+    allTrades: input.allTrades,
+    markMap,
+  });
+  const { carried, newTrades } = splitRecordTrades(input.trades);
   const breakdown = computeRecordPerformanceBreakdown({
     record: input.record,
     recordTrades: input.trades,
@@ -470,9 +684,31 @@ export async function buildRecordMetrics(input: {
     trades: newTrades,
     latestMarkByTradeId: markMap,
   });
+  const carriedStats = computeCarriedTradeStats(carried, markMap);
+  const carriedClosedTradesDetail = accounting.carriedClosedTradeDetails;
+  const cleanFreshStart = accounting.cleanFreshStart;
+  const recordVerdicts = buildRecordVerdicts({
+    recordPnl: breakdown.recordPnl,
+    newRecordRealizedPnl: breakdown.newRecordRealizedPnl,
+    newRecordUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
+    carriedPnlSinceCarry: breakdown.carriedPnlSinceCarry,
+    newTradesSummary: {
+      wins: summary.wins,
+      losses: summary.losses,
+      totalClosedTrades: breakdown.closedTradesInRecord,
+      closedTradesInRecord: breakdown.closedTradesInRecord,
+      winRate: summary.winRate,
+      profitFactor: summary.profitFactor,
+    },
+    carriedStats,
+  });
+  const newTradeWinRateLabel =
+    breakdown.closedTradesInRecord > 0 && summary.winRate !== null
+      ? `${(summary.winRate * 100).toFixed(1)}% from ${breakdown.closedTradesInRecord} closed new trade(s)`
+      : "Not enough closed new trades";
 
   const freshRecordMessage =
-    breakdown.closedTradesInRecord === 0
+    breakdown.closedTradesInRecord === 0 && accounting.newOpenTrades === 0
       ? breakdown.carriedOpenTrades > 0
         ? "Fresh record started. Not enough closed trades yet. Carried open trades are tracked separately."
         : "Fresh record started. Not enough closed trades yet."
@@ -487,27 +723,35 @@ export async function buildRecordMetrics(input: {
     startedAt: input.record.startedAt.toISOString(),
     endedAt: input.record.endedAt?.toISOString() ?? null,
     status: input.record.status,
-    startingPaperBalance: breakdown.startingPaperBalance,
-    currentPaperBalance: breakdown.currentPaperBalance,
-    recordPnl: breakdown.recordPnl,
-    recordRealizedPnl: breakdown.newRecordRealizedPnl,
-    recordUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
-    newRecordRealizedPnl: breakdown.newRecordRealizedPnl,
-    newRecordUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
-    carriedPnlSinceCarry: breakdown.carriedPnlSinceCarry,
+    startingPaperBalance: accounting.startingEquity,
+    currentPaperBalance: accounting.currentEquity,
+    recordPnl: accounting.totalRecordPnl,
+    recordRealizedPnl: accounting.newRealizedPnl,
+    recordUnrealizedPnl: accounting.newUnrealizedPnl,
+    newRecordRealizedPnl: accounting.newRealizedPnl,
+    newRecordUnrealizedPnl: accounting.newUnrealizedPnl,
+    carriedPnlSinceCarry: accounting.carriedTotalPnl,
     allTimePnl: breakdown.allTimePnl,
-    totalNetPnl: breakdown.recordPnl,
-    totalRealizedPnl: breakdown.newRecordRealizedPnl,
-    totalUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
-    totalOpenTrades: breakdown.newOpenTrades,
-    totalClosedTrades: breakdown.closedTradesInRecord,
-    newTradesOpened: breakdown.newTradesOpened,
-    closedTradesInRecord: breakdown.closedTradesInRecord,
-    carriedOpenTrades: breakdown.carriedOpenTrades,
+    totalNetPnl: accounting.totalRecordPnl,
+    totalRealizedPnl: accounting.newRealizedPnl,
+    totalUnrealizedPnl: accounting.newUnrealizedPnl,
+    totalOpenTrades: accounting.newOpenTrades,
+    totalClosedTrades: accounting.newClosedTrades,
+    newTradesOpened: accounting.newTradesOpened,
+    closedTradesInRecord: accounting.newClosedTrades,
+    carriedOpenTrades: accounting.carriedOpenTrades,
     latestRunAt: input.latestRunAt?.toISOString() ?? null,
     scopeLabel: "CURRENT_RECORD",
     simulatedLabel: "SIMULATED_PAPER_ONLY",
     freshRecordMessage,
+    simpleVerdict: recordVerdicts.simpleVerdict,
+    recordVerdicts,
+    carriedTradeStats: carriedStats,
+    carriedClosedTradesDetail,
+    cleanFreshStart,
+    newTradeWinRateLabel,
+    overallRecordStatus: recordVerdicts.overallRecordStatus,
+    currentRecordAccounting: accounting,
   };
 }
 
@@ -607,36 +851,40 @@ export async function startNewPaperRecord(input: {
   startMode?: PaperRecordStartMode;
 }): Promise<StartNewRecordResult> {
   const startMode = input.startMode ?? "soft";
-  const openTrades = await prisma.paperTrade.findMany({
-    where: { userId: input.userId, status: "OPEN" },
-  });
-
-  if (openTrades.length > 0 && startMode === "clean") {
-    return {
-      ok: false,
-      reason: "OPEN_TRADES_EXIST",
-      openTradeCount: openTrades.length,
-      startMode: "clean",
-      message:
-        "Clean Fresh Start requires no open paper trades. Choose Soft Fresh Start to carry them separately, or wait until they close.",
-    };
-  }
-
-  if (openTrades.length > 0 && !input.carryOpenTrades) {
-    return {
-      ok: false,
-      reason: "OPEN_TRADES_EXIST",
-      openTradeCount: openTrades.length,
-      startMode: "soft",
-      message:
-        "You have open paper trades. Carry them into the new record or wait until they close.",
-    };
-  }
-
   await ensurePaperRecords(input.userId);
   const active = await getActivePaperRecord(input.userId);
   if (!active) {
     throw new Error("Failed to resolve active paper record");
+  }
+
+  const openTrades = await prisma.paperTrade.findMany({
+    where: { userId: input.userId, status: "OPEN", recordId: active.id },
+  });
+  const actionableOpen = openTrades.filter(isActionableTrade);
+
+  if (actionableOpen.length > 0 && startMode === "clean") {
+    const symbols = [...new Set(actionableOpen.map((t) => t.symbol))];
+    return {
+      ok: false,
+      reason: "OPEN_TRADES_EXIST",
+      openTradeCount: actionableOpen.length,
+      startMode: "clean",
+      message:
+        `Clean Fresh Start requires no open paper trades in the active record. ` +
+        `Blocking: ${actionableOpen.length} open trade(s) (${symbols.join(", ")}). ` +
+        `Choose Soft Fresh Start to carry them separately, or wait until they close.`,
+    };
+  }
+
+  if (actionableOpen.length > 0 && !input.carryOpenTrades) {
+    return {
+      ok: false,
+      reason: "OPEN_TRADES_EXIST",
+      openTradeCount: actionableOpen.length,
+      startMode: "soft",
+      message:
+        "You have open paper trades in the active record. Carry them into the new record or wait until they close.",
+    };
   }
 
   const now = new Date();
@@ -680,8 +928,8 @@ export async function startNewPaperRecord(input: {
   });
 
   let carried = 0;
-  if (input.carryOpenTrades && openTrades.length > 0) {
-    for (const trade of openTrades) {
+  if (input.carryOpenTrades && actionableOpen.length > 0) {
+    for (const trade of actionableOpen) {
       const baselineUnrealized = tradeUnrealizedAtMark(trade, markMap);
       await prisma.paperTrade.update({
         where: { id: trade.id },
@@ -724,6 +972,10 @@ export function buildRecordActivityFeed(
     scanSummary: unknown;
   }>,
   limit = 10,
+  options?: {
+    newTradesClosedInRecord?: number;
+    carriedTradesClosedInRecord?: number;
+  },
 ): RecordActivityEvent[] {
   const events: RecordActivityEvent[] = [];
   for (const run of [...runs].sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime()).slice(0, limit)) {
@@ -731,8 +983,9 @@ export function buildRecordActivityFeed(
     const rejectionSummary = ((run.scanSummary as Record<string, unknown> | null)?.rejectionSummary ??
       {}) as Record<string, number>;
     const rejectionTotal = Object.values(rejectionSummary).reduce((sum, n) => sum + (n ?? 0), 0);
+    const runCompleted = run.status === "COMPLETED";
 
-    if (run.status === "COMPLETED") {
+    if (runCompleted) {
       events.push({
         type: "RUN_COMPLETED",
         timestamp: ts,
@@ -766,7 +1019,7 @@ export function buildRecordActivityFeed(
       });
     }
 
-    if (run.tradesClosed > 0) {
+    if (run.tradesClosed > 0 && !runCompleted) {
       events.push({
         type: "TRADE_CLOSED",
         timestamp: ts,
@@ -780,6 +1033,29 @@ export function buildRecordActivityFeed(
         type: "REJECTION_SUMMARY",
         timestamp: ts,
         summary: `Scanner rejections this run: ${rejectionTotal}.`,
+        simulatedLabel: "SIMULATED_PAPER_ONLY",
+      });
+    }
+  }
+
+  if (
+    options &&
+    (options.newTradesClosedInRecord !== undefined || options.carriedTradesClosedInRecord !== undefined)
+  ) {
+    const newClosed = options.newTradesClosedInRecord ?? 0;
+    const carriedClosed = options.carriedTradesClosedInRecord ?? 0;
+    if (newClosed + carriedClosed > 0) {
+      events.unshift({
+        type: "TRADE_CLOSED",
+        timestamp: runs[0]?.startedAt.toISOString() ?? new Date().toISOString(),
+        summary: `Record trade history: ${newClosed} closed new trade(s), ${carriedClosed} closed carried trade(s).`,
+        simulatedLabel: "SIMULATED_PAPER_ONLY",
+      });
+    } else {
+      events.unshift({
+        type: "ACCOUNTING_SYNC",
+        timestamp: runs[0]?.startedAt.toISOString() ?? new Date().toISOString(),
+        summary: `Record trade history synced: ${newClosed} closed new trade(s), ${carriedClosed} closed carried trade(s).`,
         simulatedLabel: "SIMULATED_PAPER_ONLY",
       });
     }

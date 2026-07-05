@@ -49,7 +49,15 @@ export interface RiskModeState {
   performanceScopeLabel: string;
 }
 
-export type RecordRiskModeLabel = "LOW" | "MEDIUM" | "HIGH" | "CAUTION_MODE" | "RISK_MODE_ACTIVE";
+export type RecordRiskModeLabel =
+  | "LOW"
+  | "MEDIUM"
+  | "HIGH"
+  | "WARMUP_MODE"
+  | "CAUTION_MODE"
+  | "RISK_MODE_ACTIVE"
+  | "DRAWDOWN_PROTECTION_ACTIVE"
+  | "COOLDOWN_MODE";
 
 export interface RecordCautionModeState {
   active: boolean;
@@ -59,52 +67,193 @@ export interface RecordCautionModeState {
   allocationMultiplier: number;
   minScoreBoost: number;
   blockHighVolAlts: boolean;
+  pauseNewEntries: boolean;
   reasons: string[];
+  triggerSource: string;
+  metricsUsed: {
+    newTradeLosses: number;
+    carriedTradeLosses: number;
+    allRecordLosses: number;
+    recordPnl: number;
+    drawdownPct: number | null;
+  };
   simulatedLabel: "SIMULATED_PAPER_ONLY";
 }
 
-/** Record-scoped caution after early losses — tighter filters until more closed trades. */
+export interface RecordCautionContext {
+  recordPnl?: number;
+  newTradeLosses?: number;
+  carriedTradeLosses?: number;
+  allRecordLosses?: number;
+  carriedPnlSinceCarry?: number;
+}
+
+/** Record-scoped risk — blueprint WARMUP/CAUTION/COOLDOWN; never LOW without proof. */
 export function evaluateRecordCautionMode(
   summary: PaperPerformanceSummary,
   startingPaperBalance: number,
+  context: RecordCautionContext = {},
 ): RecordCautionModeState {
   const reasons: string[] = [];
+  const newTradeLosses = context.newTradeLosses ?? summary.losses;
+  const carriedTradeLosses = context.carriedTradeLosses ?? 0;
+  const allRecordLosses = context.allRecordLosses ?? newTradeLosses + carriedTradeLosses;
+  const recordPnl = context.recordPnl ?? summary.totalNetPnl;
+  const carriedPnlSinceCarry = context.carriedPnlSinceCarry ?? 0;
   const largestLoss = Math.abs(summary.largestLoss ?? summary.averageLosingTrade ?? 0);
   const lossPctOfRecord =
     startingPaperBalance > 0 ? (largestLoss / startingPaperBalance) * 100 : 0;
+  const recordPnlNegative = recordPnl < -0.01;
+  const drawdownPct =
+    summary.maxDrawdownSimulated !== null && startingPaperBalance > 0
+      ? (Math.abs(summary.maxDrawdownSimulated) / startingPaperBalance) * 100
+      : null;
+  const drawdownActive = (drawdownPct !== null && drawdownPct >= 2.5) || recordPnlNegative;
+
+  const metricsUsed = {
+    newTradeLosses,
+    carriedTradeLosses,
+    allRecordLosses,
+    recordPnl,
+    drawdownPct,
+  };
+
+  const buildState = (
+    partial: Omit<
+      RecordCautionModeState,
+      "triggerSource" | "metricsUsed" | "simulatedLabel"
+    > & { triggerSource: string },
+  ): RecordCautionModeState => ({
+    ...partial,
+    metricsUsed,
+    simulatedLabel: "SIMULATED_PAPER_ONLY",
+  });
+
+  if (allRecordLosses >= 3) {
+    reasons.push(`${allRecordLosses} total record losses (${newTradeLosses} new, ${carriedTradeLosses} carried)`);
+    const triggerSource =
+      carriedTradeLosses >= 3
+        ? "carried_trade_losses"
+        : newTradeLosses >= 3
+          ? "new_trade_losses"
+          : "mixed_record_losses";
+    const dashboardMessage =
+      carriedTradeLosses >= 3 && newTradeLosses < 3
+        ? `Cooldown active due to carried-trade losses (${carriedTradeLosses} carried, ${newTradeLosses} new) and record drawdown. Pausing new entries.`
+        : newTradeLosses >= 3
+          ? `Cooldown active — ${newTradeLosses} new-trade losses in current record. Pausing new entries until evidence improves.`
+          : `Cooldown active — ${allRecordLosses} total record losses (${newTradeLosses} new, ${carriedTradeLosses} carried). Pausing new entries.`;
+    return buildState({
+      active: true,
+      mode: "COOLDOWN_MODE",
+      dashboardLabel: "COOLDOWN_MODE",
+      dashboardMessage,
+      allocationMultiplier: 0.35,
+      minScoreBoost: 12,
+      blockHighVolAlts: true,
+      pauseNewEntries: true,
+      reasons,
+      triggerSource,
+    });
+  }
+
+  if (drawdownActive && summary.totalClosedTrades >= 1 && carriedPnlSinceCarry < -50) {
+    reasons.push(`Carried trade loss since carry: ${carriedPnlSinceCarry.toFixed(2)} SIM`);
+    if (recordPnlNegative) {
+      reasons.push(`Record P&L negative (${recordPnl.toFixed(2)} SIM)`);
+    }
+    return buildState({
+      active: true,
+      mode: "DRAWDOWN_PROTECTION_ACTIVE",
+      dashboardLabel: "DRAWDOWN_PROTECTION_ACTIVE",
+      dashboardMessage:
+        "Drawdown protection active — carried-trade losses and record drawdown. Pause weak entries.",
+      allocationMultiplier: 0.45,
+      minScoreBoost: 10,
+      blockHighVolAlts: true,
+      pauseNewEntries: drawdownPct !== null && drawdownPct >= 4,
+      reasons,
+      triggerSource: "carried_trade_drawdown",
+    });
+  }
+
+  if (drawdownActive && summary.totalClosedTrades >= 1 && summary.totalClosedTrades >= 5) {
+    reasons.push(
+      recordPnlNegative
+        ? `Record P&L negative (${recordPnl.toFixed(2)} SIM)`
+        : `Drawdown ${drawdownPct?.toFixed(2) ?? "UNKNOWN"}% of record start`,
+    );
+    return buildState({
+      active: true,
+      mode: "DRAWDOWN_PROTECTION_ACTIVE",
+      dashboardLabel: "DRAWDOWN_PROTECTION_ACTIVE",
+      dashboardMessage:
+        "Drawdown protection active — pause weak entries and exit deteriorating trades.",
+      allocationMultiplier: 0.45,
+      minScoreBoost: 10,
+      blockHighVolAlts: true,
+      pauseNewEntries: drawdownPct !== null && drawdownPct >= 4,
+      reasons,
+      triggerSource: "record_drawdown",
+    });
+  }
+
+  if (newTradeLosses >= 2) {
+    reasons.push(`${newTradeLosses} new-trade losses in current record — reduced risk`);
+  } else if (carriedTradeLosses >= 2) {
+    reasons.push(`${carriedTradeLosses} carried-trade losses in current record — reduced risk`);
+  }
+
+  const warmup = summary.totalClosedTrades < 20;
+  if (warmup) {
+    reasons.push(
+      `Warmup — only ${summary.totalClosedTrades}/20 closed trades in current record`,
+    );
+  }
+
   const firstLargeLoss =
     summary.totalClosedTrades < 5 &&
-    summary.losses >= 1 &&
+    newTradeLosses >= 1 &&
     summary.wins === 0 &&
     (lossPctOfRecord >= 0.4 || largestLoss >= startingPaperBalance * 0.004);
 
   if (firstLargeLoss) {
     reasons.push(
-      `First closed trade lost ${largestLoss.toFixed(2)} SIM (${lossPctOfRecord.toFixed(2)}% of record start)`,
+      `First closed new trade lost ${largestLoss.toFixed(2)} SIM (${lossPctOfRecord.toFixed(2)}% of record start)`,
     );
   }
-  if (summary.profitFactor === 0 && summary.losses >= 1) {
-    reasons.push("Profit factor is 0 in current record");
+  if (summary.profitFactor === 0 && newTradeLosses >= 1) {
+    reasons.push("Profit factor is 0 for new trades in current record");
   }
-  if (summary.wins === 0 && summary.losses >= 1 && (summary.averageLosingTrade ?? 0) < 0) {
-    reasons.push("No wins yet — average loss exceeds any average win");
+  if (summary.wins === 0 && newTradeLosses >= 1 && (summary.averageLosingTrade ?? 0) < 0) {
+    reasons.push("No new-trade wins yet — average loss exceeds any average win");
   }
 
-  const active = reasons.length > 0 && summary.totalClosedTrades < 5;
+  const needsCaution =
+    warmup ||
+    firstLargeLoss ||
+    (summary.profitFactor === 0 && newTradeLosses >= 1) ||
+    newTradeLosses >= 2 ||
+    (carriedTradeLosses >= 2 && recordPnlNegative);
 
-  if (active) {
-    return {
+  if (needsCaution) {
+    const mode: RecordRiskModeLabel = warmup ? "WARMUP_MODE" : "CAUTION_MODE";
+    return buildState({
       active: true,
-      mode: "CAUTION_MODE",
-      dashboardLabel: "CAUTION_MODE",
-      dashboardMessage:
-        "Caution mode active — current record started with a loss. Reducing size until more evidence exists.",
-      allocationMultiplier: 0.5,
-      minScoreBoost: 8,
+      mode,
+      dashboardLabel: mode,
+      dashboardMessage: warmup
+        ? "Warmup mode active — current record lacks proof. Requiring stronger score/R:R and reduced size."
+        : carriedTradeLosses >= 2 && newTradeLosses < 2
+          ? "Caution mode active — carried-trade losses weighing on record. Reducing size until more evidence exists."
+          : "Caution mode active — current record started weak. Reducing size until more evidence exists.",
+      allocationMultiplier: newTradeLosses >= 2 || carriedTradeLosses >= 2 ? 0.4 : 0.5,
+      minScoreBoost: newTradeLosses >= 2 || carriedTradeLosses >= 2 ? 10 : 8,
       blockHighVolAlts: true,
+      pauseNewEntries: false,
       reasons,
-      simulatedLabel: "SIMULATED_PAPER_ONLY",
-    };
+      triggerSource: warmup ? "warmup" : "record_weak_start",
+    });
   }
 
   if (
@@ -112,7 +261,7 @@ export function evaluateRecordCautionMode(
     summary.profitFactor < 1 &&
     summary.totalClosedTrades >= 1
   ) {
-    return {
+    return buildState({
       active: true,
       mode: "RISK_MODE_ACTIVE",
       dashboardLabel: "RISK_MODE_ACTIVE",
@@ -121,22 +270,40 @@ export function evaluateRecordCautionMode(
       allocationMultiplier: 0.65,
       minScoreBoost: 5,
       blockHighVolAlts: true,
+      pauseNewEntries: false,
       reasons: [`Profit factor ${summary.profitFactor.toFixed(2)} below 1.0 in current record`],
-      simulatedLabel: "SIMULATED_PAPER_ONLY",
-    };
+      triggerSource: "profit_factor",
+    });
   }
 
-  return {
+  if (summary.totalClosedTrades < 20) {
+    return buildState({
+      active: true,
+      mode: "WARMUP_MODE",
+      dashboardLabel: "WARMUP_MODE",
+      dashboardMessage:
+        "Warmup mode — insufficient closed trades for LOW risk label.",
+      allocationMultiplier: 0.75,
+      minScoreBoost: 4,
+      blockHighVolAlts: false,
+      pauseNewEntries: false,
+      reasons: [`${summary.totalClosedTrades}/20 closed new trades`],
+      triggerSource: "warmup",
+    });
+  }
+
+  return buildState({
     active: false,
     mode: "LOW",
     dashboardLabel: "LOW",
-    dashboardMessage: "Normal record risk mode — no caution shield active yet.",
+    dashboardMessage: "Normal record risk mode — sufficient record proof.",
     allocationMultiplier: 1,
     minScoreBoost: 0,
     blockHighVolAlts: false,
+    pauseNewEntries: false,
     reasons: [],
-    simulatedLabel: "SIMULATED_PAPER_ONLY",
-  };
+    triggerSource: "none",
+  });
 }
 
 export interface ProfitQualitySummary {
