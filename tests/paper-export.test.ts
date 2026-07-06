@@ -452,6 +452,90 @@ describe("export equity sync", () => {
     expect(text).toContain("Current equity (SIM): 9598.4341");
     expect(text).toContain("Current equity = starting equity + total record P&L");
   });
+
+  it("export unrealized P&L matches dashboard for open new trades", async () => {
+    setupPrismaMocks(2, 10);
+    const entry = 0.48;
+    const size = 10387.5;
+    const mark = entry - 2.4191 / size;
+    vi.mocked(prisma.paperTrade.findMany).mockImplementation(async (args) => {
+      if (args?.where && "status" in args.where && args.where.status === "OPEN") {
+        return [
+          {
+            ...mockTrade({
+              id: "ada-1",
+              symbol: "ADA/USD",
+              recordId: "rec-active",
+              status: "OPEN",
+              result: "OPEN",
+              closedAt: null,
+              exitPrice: null,
+              netPaperPnl: null,
+              entryPrice: entry,
+              simulatedSize: size,
+              reason: "TINY B PAPER-ONLY TEST — reduced size | vwap-reclaim-momentum — test",
+            }),
+            snapshots: [{ markPrice: mark, unrealizedPnl: -2.4191, capturedAt: new Date() }],
+          },
+          {
+            ...mockTrade({
+              id: "bch-1",
+              symbol: "BCH/USD",
+              recordId: "rec-active",
+              status: "OPEN",
+              result: "OPEN",
+              closedAt: null,
+              exitPrice: null,
+              netPaperPnl: null,
+              entryPrice: 500,
+              simulatedSize: 0.1,
+              reason: "TINY B PAPER-ONLY TEST — reduced size | trend-pullback — test",
+            }),
+            snapshots: [{ markPrice: 499, unrealizedPnl: 0, capturedAt: new Date() }],
+          },
+        ];
+      }
+      return [
+        mockTrade({
+          id: "ada-1",
+          symbol: "ADA/USD",
+          recordId: "rec-active",
+          status: "OPEN",
+          result: "OPEN",
+          closedAt: null,
+          exitPrice: null,
+          netPaperPnl: null,
+          entryPrice: entry,
+          simulatedSize: size,
+          reason: "TINY B PAPER-ONLY TEST — reduced size | vwap-reclaim-momentum — test",
+        }),
+        mockTrade({
+          id: "bch-1",
+          symbol: "BCH/USD",
+          recordId: "rec-active",
+          status: "OPEN",
+          result: "OPEN",
+          closedAt: null,
+          exitPrice: null,
+          netPaperPnl: null,
+          entryPrice: 500,
+          simulatedSize: 0.1,
+          reason: "TINY B PAPER-ONLY TEST — reduced size | trend-pullback — test",
+        }),
+      ];
+    });
+
+    const text = await buildPaperExportLog({
+      userId: "u1",
+      generatedAt: new Date("2026-07-04T18:00:00Z"),
+      mode: "CURRENT_RECORD_EXPORT",
+    });
+    expect(text).toContain("Unrealized P&L — new trades in record (SIM): -2.5191");
+    expect(text).not.toMatch(/Trade #\d+ .* OPEN UNKNOWN SIM/);
+    expect(text).toContain("Entry price:");
+    expect(text).toContain("Current mark price:");
+    expect(text).toContain("Paper execution mode: TINY_B_SETUP_PAPER_ONLY");
+  });
 });
 
 describe("export failure is not a paper run error", () => {

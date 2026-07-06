@@ -81,6 +81,29 @@ export function passedHardSafetyFilters(candidate: ScanCandidate): boolean {
   return true;
 }
 
+function passedTinyBTradeQuality(
+  candidate: ScanCandidate,
+  recordCaution?: RecordCautionModeState,
+): boolean {
+  const baseMin = minScoreForTier(candidate.riskTier);
+  if (candidate.opportunityScore < baseMin) return false;
+  if (
+    recordCaution?.blockHighVolAlts &&
+    (candidate.riskTier === "HIGH_VOLATILITY" || candidate.riskTier === "EXTREME_RISK")
+  ) {
+    return false;
+  }
+  if (
+    candidate.reasonCode === "REJECTED_BAD_RISK_REWARD" ||
+    candidate.reasonCode === "RISK_REWARD_TOO_WEAK"
+  ) {
+    return false;
+  }
+  if (candidate.scoreBreakdown.confidenceLevel === "LOW" && candidate.opportunityScore < baseMin + 8) {
+    return false;
+  }
+  return true;
+}
 function passedTradeQuality(candidate: ScanCandidate, recordCaution?: RecordCautionModeState): boolean {
   const baseMin = minScoreForTier(candidate.riskTier);
   const effectiveMin = baseMin + (recordCaution?.active ? recordCaution.minScoreBoost : 0);
@@ -166,10 +189,6 @@ export function evaluatePaperDecision(
     decision = "REJECT";
     setupTier = "REJECTED";
     blockedReason = candidate.reasonText || candidate.reasonCode || "hard safety filter failed";
-  } else if (options?.recordCaution?.pauseNewEntries) {
-    decision = "REJECT";
-    setupTier = "REJECTED";
-    blockedReason = options.recordCaution.dashboardMessage;
   } else if (passedCheck && passedTradeQuality(candidate, options?.recordCaution)) {
     decision = "OPEN_PAPER_TRADE";
     setupTier = passedCheck.passed && candidate.opportunityScore >= baseMin + 10 ? "A+" : "A";
@@ -178,7 +197,7 @@ export function evaluatePaperDecision(
       : 1;
   } else if (
     passedHardSafetyFilters(candidate) &&
-    passedTradeQuality(candidate, options?.recordCaution) &&
+    passedTinyBTradeQuality(candidate, options?.recordCaution) &&
     checks.some(nearMissStrategy) &&
     candidate.opportunityScore >= baseMin
   ) {

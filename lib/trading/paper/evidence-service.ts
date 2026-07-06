@@ -86,6 +86,14 @@ import { evaluateProfitLockState, evaluateRecordProfitLock } from "@/lib/trading
 import { evaluateOpportunityCost } from "@/lib/trading/paper/opportunity-cost-engine";
 import { buildWhyNoTradeReport } from "@/lib/trading/paper/why-no-trade-report";
 import { buildPaperRunDiagnostics } from "@/lib/trading/paper/paper-diagnostics";
+import {
+  buildNoTradeDiagnosticRow,
+  emptyTinyBExecutionSummary,
+  finalizeTinyBExecutionNote,
+  mapStrategyLayerBlockToTinyBReason,
+  resolveTinyBExecutionBlocker,
+  type TinyBExecutionSummary,
+} from "@/lib/trading/paper/tiny-b-execution";
 import { evaluateTradeFrequencyHealth } from "@/lib/trading/paper/trade-frequency-health";
 import { buildPaperBrokerRealismStatus } from "@/lib/trading/paper/paper-broker-realism";
 import { mapStrategyForCandidate } from "@/lib/trading/paper/strategy-mapping";
@@ -1661,6 +1669,9 @@ export async function getPaperStatus() {
   const paperRunDiagnostics =
     (latestRunSummary.paperRunDiagnostics as ReturnType<typeof buildPaperRunDiagnostics> | undefined) ??
     null;
+  const tinyBExecution =
+    (latestRunSummary.tinyBExecution as import("@/lib/trading/paper/tiny-b-execution").TinyBExecutionSummary | undefined) ??
+    null;
   const tradeFrequencyHealth = evaluateTradeFrequencyHealth({
     runsCompleted: recordScopedRuns.filter((r) => r.status === "COMPLETED").length,
     candidatesScanned: recordStats.candidatesStored,
@@ -1796,6 +1807,7 @@ export async function getPaperStatus() {
     tradeFrequencyHealth,
     whyNoTradeReport,
     paperRunDiagnostics,
+    tinyBExecution,
     paperBrokerRealism,
     recordProfitLock,
     riskConfig: serializePaperRiskConfig(),
@@ -2045,6 +2057,8 @@ export async function runPaperEvidenceStep(options?: {
   const actions: PaperRunAction[] = [];
   let errorCount = 0;
   let tradesUpdated = 0;
+  let newTradesUpdated = 0;
+  let carriedTradesUpdated = 0;
   let tradesClosed = 0;
   let tradesOpened = 0;
   let noTradeCount = 0;
@@ -2117,7 +2131,11 @@ export async function runPaperEvidenceStep(options?: {
         snapshotWriteFailures++;
         if (snapshotError) runErrors.push(snapshotError);
       }
-      if (action === "TRADE_UPDATED") tradesUpdated++;
+      if (action === "TRADE_UPDATED") {
+        tradesUpdated++;
+        if (isCarriedTrade(trade)) carriedTradesUpdated++;
+        else newTradesUpdated++;
+      }
       if (action === "TRADE_CLOSED") tradesClosed++;
     } catch {
       errorCount++;
@@ -2345,6 +2363,7 @@ export async function runPaperEvidenceStep(options?: {
     rotatedIn?: string;
     exitSimulatedPnl?: number;
   }> = [];
+  const tinyBExecution: TinyBExecutionSummary = emptyTinyBExecutionSummary();
 
   async function buildOpenViews(trades: DbPaperTrade[]): Promise<OpenTradeCapacityView[]> {
     const views: OpenTradeCapacityView[] = [];
@@ -2372,18 +2391,74 @@ export async function runPaperEvidenceStep(options?: {
   for (const candidate of topToEvaluate) {
     if (newTradesThisRun >= SCANNER_CONFIG.maxNewTradesPerRun) break;
 
-    if (recordCaution.pauseNewEntries) {
+    const paperDecision = evaluatePaperDecision(candidate, { recordCaution });
+    if (paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY") {
+      tinyBExecution.tinyBEligibleCount++;
+    }
+
+  if (recordCaution.pauseNewEntries && canOpenPaperTrade(paperDecision.decision)) {
+      const pauseBlock = {
+        symbol: candidate.symbol,
+        reasonCode:
+          paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY"
+            ? ("TINY_B_BLOCKED_CAUTION_CRITICAL" as const)
+            : ("TINY_B_BLOCKED_CAUTION_CRITICAL" as const),
+        reasonText: `Blocked by caution pauseNewEntries — ${recordCaution.dashboardMessage}`,
+        simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+      };
+      if (paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY") {
+        tinyBExecution.blockers.push(pauseBlock);
+      }
+      tinyBExecution.noTradeDiagnostics.push(
+        buildNoTradeDiagnosticRow({
+          candidate,
+          paperDecision,
+          blocker: pauseBlock.reasonText,
+          timestamp: now.toISOString(),
+        }),
+      );
       tradeReadyNotOpenedSymbols.add(candidate.symbol);
       noTradeCount++;
       continue;
     }
 
-    const paperDecision = evaluatePaperDecision(candidate, { recordCaution });
     if (!canOpenPaperTrade(paperDecision.decision)) {
+      tradeReadyNotOpenedSymbols.add(candidate.symbol);
+      noTradeCount++;
+      tinyBExecution.noTradeDiagnostics.push(
+        buildNoTradeDiagnosticRow({
+          candidate,
+          paperDecision,
+          blocker: paperDecision.blockedReason ?? candidate.reasonCode,
+          timestamp: now.toISOString(),
+        }),
+      );
+      continue;
+    }
+
+    const execBlock = resolveTinyBExecutionBlocker({
+      candidate,
+      paperDecision,
+      recordCaution,
+      openSlotsAvailable: currentOpenCount < effectiveMaxOpenTrades,
+      maxOpenTradesReached: currentOpenCount >= effectiveMaxOpenTrades,
+      symbolAlreadyOpen: activeOpenTrades.some((t) => t.symbol === candidate.symbol),
+    });
+    if (execBlock) {
+      tinyBExecution.blockers.push(execBlock);
+      tinyBExecution.noTradeDiagnostics.push(
+        buildNoTradeDiagnosticRow({
+          candidate,
+          paperDecision,
+          blocker: execBlock.reasonText,
+          timestamp: now.toISOString(),
+        }),
+      );
       tradeReadyNotOpenedSymbols.add(candidate.symbol);
       noTradeCount++;
       continue;
     }
+
     const blueprintStrategy = {
       mapping: paperDecision.mapping,
       debug: paperDecision.blueprint,
@@ -2519,14 +2594,15 @@ export async function runPaperEvidenceStep(options?: {
     }
 
     const momentum = momentumFromSnapshot(snapshot);
-    const decisionAllocation =
-      paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY"
-        ? paperDecision.allocationMultiplier
-        : recordCaution.active
-          ? recordCaution.allocationMultiplier
-          : 1;
+    const isTinyBOpen = paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY";
+    const decisionAllocation = isTinyBOpen
+      ? paperDecision.allocationMultiplier
+      : recordCaution.active
+        ? recordCaution.allocationMultiplier
+        : 1;
     const strategy = evaluateControlledActiveStrategy(candidate, momentum, {
       allocationMultiplier: decisionAllocation,
+      paperExecutionMode: isTinyBOpen ? "TINY_B_SETUP_PAPER_ONLY" : "OPEN_PAPER_TRADE",
     });
     const { baseAsset, quoteAsset } = parseSymbol(candidate.symbol);
     const mappedStrategy = blueprintStrategy.mapping;
@@ -2551,26 +2627,24 @@ export async function runPaperEvidenceStep(options?: {
     signalsStored++;
 
     if (strategy.decision === "NO_TRADE") {
-      await prisma.paperTrade.create({
-        data: {
-          userId,
-          signalId: signal.id,
-          recordId,
-          strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
-          symbol: candidate.symbol,
-          baseAsset,
-          quoteAsset,
-          side: "NO_TRADE",
-          strategyName: mappedStrategy.strategyName,
-          status: "NO_TRADE",
-          result: "NO_TRADE",
-          confidence: strategy.confidence,
-          reason: `${strategy.reasonCode}: ${strategy.reason}`,
-          dataSource: "kraken",
-          isRealTrade: false,
-          isVerifiedLivePnl: false,
-        },
-      });
+      const layerBlock =
+        isTinyBOpen
+          ? {
+              symbol: candidate.symbol,
+              reasonCode: mapStrategyLayerBlockToTinyBReason(strategy.reasonCode, paperDecision.decision),
+              reasonText: `Tiny B eligible but strategy layer blocked — ${strategy.reason}`,
+              simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+            }
+          : null;
+      if (layerBlock) tinyBExecution.blockers.push(layerBlock);
+      tinyBExecution.noTradeDiagnostics.push(
+        buildNoTradeDiagnosticRow({
+          candidate,
+          paperDecision,
+          blocker: strategy.reason,
+          timestamp: now.toISOString(),
+        }),
+      );
       actions.push("NO_TRADE");
       noTradeCount++;
       latestAction = "NO_TRADE";
@@ -2598,7 +2672,9 @@ export async function runPaperEvidenceStep(options?: {
         openedAt: now,
         result: "OPEN",
         confidence: strategy.confidence,
-        reason: strategy.warning
+        reason: isTinyBOpen
+          ? `TINY B PAPER-ONLY TEST — reduced size, strict stop, no live, no Auto. | ${mappedStrategy.strategyName} — ${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}% | missing: ${paperDecision.blueprint.missingConditions.slice(0, 3).join("; ") || "none"}`
+          : strategy.warning
           ? `${strategy.warning}: ${mappedStrategy.strategyName} — ${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`
           : `${mappedStrategy.strategyName} — ${strategy.reason} | score: ${candidate.opportunityScore.toFixed(0)} | spread: ${candidate.spreadBps.toFixed(1)} bps | leverage: ${strategy.simulatedLeverage ?? 1}x (${strategy.leverageReason ?? "spot"}) | alloc: ${strategy.capitalAllocationPct?.toFixed(2) ?? "?"}%`,
         dataSource: "kraken",
@@ -2619,13 +2695,16 @@ export async function runPaperEvidenceStep(options?: {
       usLeverageAvailable: strategy.usLeverageAvailable,
       marketType: strategy.marketType,
     });
-    actions.push("PAPER_TRADE_OPENED");
-    latestAction = "PAPER_TRADE_OPENED";
+    actions.push(isTinyBOpen ? "TINY_B_OPENED_PAPER_ONLY" : "PAPER_TRADE_OPENED");
+    latestAction = isTinyBOpen ? "TINY_B_OPENED_PAPER_ONLY" : "PAPER_TRADE_OPENED";
+    if (isTinyBOpen) tinyBExecution.tinyBOpenedCount++;
     tradesOpened++;
     newTradesThisRun++;
     currentOpenCount++;
     activeOpenTrades.push(trade);
   }
+
+  tinyBExecution.executionNote = finalizeTinyBExecutionNote(tinyBExecution);
 
   if (tradesUpdated > 0 && tradesOpened === 0 && maxOpenTradesReached) {
     latestAction = "TRADE_UPDATED_MAX_OPEN_REACHED";
@@ -2735,6 +2814,7 @@ export async function runPaperEvidenceStep(options?: {
     providerSource: wideResult.activeDataSources?.join(", ") ?? undefined,
     marketDataStatus,
     timestamp: finishedAt.toISOString(),
+    tinyBExecution,
   });
 
   const databaseWriteFailed =
@@ -2874,8 +2954,13 @@ export async function runPaperEvidenceStep(options?: {
       staleSymbolCount,
       scanSummary: {
         rejectionSummary,
+        tradeUpdateBreakdown: {
+          newTradesUpdated,
+          carriedTradesUpdated,
+        },
         whyNoTradeReport,
         paperRunDiagnostics,
+        tinyBExecution,
         pipelineCounts,
         marketDataStatus,
         coingeckoStatus: wideResult.coingeckoStatus,

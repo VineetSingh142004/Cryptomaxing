@@ -18,6 +18,8 @@ import {
   type CleanFreshStartStatus,
   type RecordVerdictBundle,
 } from "@/lib/trading/paper/record-accounting";
+import type { NormalizedMarketSnapshot } from "@/lib/trading/data/types";
+import { evaluateOpenTradeThesisReview } from "@/lib/trading/paper/thesis-invalidation";
 
 export const CARRIED_FROM_PREVIOUS_RECORD = "CARRIED_FROM_PREVIOUS_RECORD";
 export const LEGACY_RECORD_NAME = "Legacy Record";
@@ -77,6 +79,7 @@ export interface RecordActivityEvent {
     | "TRADE_UPDATED"
     | "TRADE_CLOSED"
     | "REJECTION_SUMMARY"
+    | "NEW_TRADE_UPDATED"
     | "CARRIED_TRADE_UPDATED"
     | "THESIS_INVALIDATED"
     | "ACCOUNTING_SYNC"
@@ -143,6 +146,12 @@ export interface CurrentRecordTradeDetail {
   thesisStatus: string;
   distanceToTpPct: string | null;
   distanceToSlPct: string | null;
+  reasonCode: string | null;
+  paperExecutionMode: string;
+  setupLabel: string | null;
+  closestBlueprintStrategy: string;
+  thesisRecommendation: string | null;
+  strategyVersion: string;
   simulatedLabel: "SIMULATED_PAPER_ONLY";
 }
 
@@ -226,6 +235,23 @@ function buildTradeDetail(
   const tp = toNumber(trade.plannedTakeProfit);
   const sl = toNumber(trade.plannedStopLoss);
   const exitMatch = trade.reason.match(/\|\s*closed:\s*([^|]+)/i);
+  const parsedReason = parseTradeReasonMeta(trade.reason);
+  const thesisReview =
+    trade.status === "OPEN" && entry > 0 && mark > 0
+      ? evaluateOpenTradeThesisReview({
+          side: trade.side,
+          entryPrice: entry,
+          markPrice: mark,
+          snapshot: {
+            symbol: trade.symbol,
+            ticker: { last: mark, bid: mark, ask: mark, spreadBps: 0 },
+            candles5m: [],
+            relativeVolume: 1,
+          } as NormalizedMarketSnapshot,
+          entrySpreadBps: null,
+          hasMarketData: false,
+        })
+      : null;
   return {
     tradeId: trade.id,
     symbol: trade.symbol,
@@ -241,12 +267,37 @@ function buildTradeDetail(
     recordPnlSinceStart,
     strategyName: trade.strategyName,
     exitReason: exitMatch ? exitMatch[1].trim() : null,
-    thesisStatus: trade.result ?? (trade.status === "OPEN" ? "OPEN" : "UNKNOWN"),
+    thesisStatus: thesisReview?.status ?? trade.result ?? (trade.status === "OPEN" ? "OPEN" : "UNKNOWN"),
     distanceToTpPct:
       entry > 0 && tp && mark ? (((tp - mark) / entry) * 100).toFixed(2) : null,
     distanceToSlPct:
       entry > 0 && sl && mark ? (((mark - sl) / entry) * 100).toFixed(2) : null,
+    reasonCode: parsedReason.reasonCode,
+    paperExecutionMode: parsedReason.paperExecutionMode,
+    setupLabel: parsedReason.setupLabel,
+    closestBlueprintStrategy: trade.strategyName || parsedReason.closestBlueprintStrategy,
+    thesisRecommendation: thesisReview?.recommendation ?? null,
+    strategyVersion: trade.strategyVersion ?? "legacy",
     simulatedLabel: "SIMULATED_PAPER_ONLY",
+  };
+}
+
+function parseTradeReasonMeta(reason: string): {
+  reasonCode: string | null;
+  paperExecutionMode: string;
+  setupLabel: string | null;
+  closestBlueprintStrategy: string;
+} {
+  const base = reason.split("|")[0]?.trim() ?? reason;
+  const isTinyB = /TINY B PAPER-ONLY/i.test(reason);
+  const strategyMatch = reason.match(/^([^|]+?)\s*—\s*/);
+  const closestBlueprintStrategy = strategyMatch?.[1]?.trim() ?? "UNKNOWN";
+  const reasonCodeMatch = base.match(/^([A-Z0-9_]+):/);
+  return {
+    reasonCode: reasonCodeMatch?.[1] ?? (isTinyB ? "TINY_B_SETUP_PAPER_ONLY" : null),
+    paperExecutionMode: isTinyB ? "TINY_B_SETUP_PAPER_ONLY" : "OPEN_PAPER_TRADE",
+    setupLabel: isTinyB ? "Tiny B" : null,
+    closestBlueprintStrategy,
   };
 }
 
@@ -352,7 +403,10 @@ export interface PaperRecordMetrics extends PaperPerformanceSummary {
 
 export interface PaperRecordHistoryRow extends SerializedPaperRecord {
   recordPnl: number | null;
+  openTrades: number;
   closedTrades: number;
+  totalOpenedTrades: number;
+  newRecordUnrealizedPnl: number;
   winRate: number | null;
   profitFactor: number | null;
 }
@@ -393,6 +447,10 @@ function toNumber(value: { toNumber?: () => number } | number | null | undefined
 
 function isActionableTrade(trade: DbPaperTrade): boolean {
   return trade.status !== "NO_TRADE" && trade.side !== "NO_TRADE";
+}
+
+export function isActionablePaperTrade(trade: DbPaperTrade): boolean {
+  return isActionableTrade(trade);
 }
 
 export function isCarriedTrade(trade: DbPaperTrade): boolean {
@@ -772,10 +830,17 @@ export async function buildRecordHistoryRows(userId: string): Promise<PaperRecor
     const summary = buildPaperPerformanceSummary({ trades: newTrades, latestMarkByTradeId: markMap });
 
     if (record.status === "ARCHIVED" && record.endingPaperBalance !== null) {
+      const { carried } = splitRecordTrades(recordTrades);
+      const carriedClosed = carried.filter(
+        (t) => t.status === "CLOSED" || t.status === "EXPIRED",
+      ).length;
       rows.push({
         ...serialized,
         recordPnl: toNumber(record.endingPaperBalance) - toNumber(record.startingPaperBalance),
-        closedTrades: summary.totalClosedTrades,
+        openTrades: 0,
+        closedTrades: summary.totalClosedTrades + carriedClosed,
+        totalOpenedTrades: summary.totalClosedTrades + summary.totalOpenTrades,
+        newRecordUnrealizedPnl: 0,
         winRate: summary.winRate,
         profitFactor: summary.profitFactor,
       });
@@ -786,10 +851,17 @@ export async function buildRecordHistoryRows(userId: string): Promise<PaperRecor
         allTrades,
         markMap,
       });
+      const { carried } = splitRecordTrades(recordTrades);
+      const carriedClosed = carried.filter(
+        (t) => t.status === "CLOSED" || t.status === "EXPIRED",
+      ).length;
       rows.push({
         ...serialized,
         recordPnl: breakdown.recordPnl,
-        closedTrades: breakdown.closedTradesInRecord,
+        openTrades: breakdown.newOpenTrades + breakdown.carriedOpenTrades,
+        closedTrades: breakdown.closedTradesInRecord + carriedClosed,
+        totalOpenedTrades: breakdown.newTradesOpened,
+        newRecordUnrealizedPnl: breakdown.newRecordUnrealizedPnl,
         winRate: summary.winRate,
         profitFactor: summary.profitFactor,
       });
@@ -1015,12 +1087,36 @@ export function buildRecordActivityFeed(
     }
 
     if (run.tradesUpdated > 0) {
-      events.push({
-        type: run.tradesOpened === 0 && run.tradesUpdated > 0 ? "CARRIED_TRADE_UPDATED" : "TRADE_UPDATED",
-        timestamp: ts,
-        summary: `Updated ${run.tradesUpdated} open paper trade(s).`,
-        simulatedLabel: "SIMULATED_PAPER_ONLY",
-      });
+      const breakdown = (
+        (run.scanSummary as Record<string, unknown> | null)?.tradeUpdateBreakdown ?? null
+      ) as { newTradesUpdated?: number; carriedTradesUpdated?: number } | null;
+      const newUpdated = breakdown?.newTradesUpdated ?? 0;
+      const carriedUpdated = breakdown?.carriedTradesUpdated ?? 0;
+      if (breakdown && (newUpdated > 0 || carriedUpdated > 0)) {
+        if (newUpdated > 0) {
+          events.push({
+            type: "NEW_TRADE_UPDATED",
+            timestamp: ts,
+            summary: `Updated ${newUpdated} new record paper trade(s).`,
+            simulatedLabel: "SIMULATED_PAPER_ONLY",
+          });
+        }
+        if (carriedUpdated > 0) {
+          events.push({
+            type: "CARRIED_TRADE_UPDATED",
+            timestamp: ts,
+            summary: `Updated ${carriedUpdated} carried paper trade(s).`,
+            simulatedLabel: "SIMULATED_PAPER_ONLY",
+          });
+        }
+      } else {
+        events.push({
+          type: "TRADE_UPDATED",
+          timestamp: ts,
+          summary: `Updated ${run.tradesUpdated} open paper trade(s).`,
+          simulatedLabel: "SIMULATED_PAPER_ONLY",
+        });
+      }
     }
 
     if (run.tradesClosed > 0) {

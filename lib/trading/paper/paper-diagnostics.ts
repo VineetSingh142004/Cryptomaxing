@@ -33,6 +33,7 @@ export function buildPaperRunDiagnostics(input: {
   marketDataStatus?: string;
   timestamp?: string;
   followUpPrices?: Map<string, number>;
+  tinyBExecution?: import("@/lib/trading/paper/tiny-b-execution").TinyBExecutionSummary;
 }): PaperRunDiagnostics {
   const best = [...input.ranked].sort((a, b) => b.opportunityScore - a.opportunityScore)[0] ?? null;
   const featureScoreHealth = buildFeatureScoreHealth({
@@ -53,18 +54,55 @@ export function buildPaperRunDiagnostics(input: {
     best != null &&
     evaluatePaperDecision(best).decision === "OPEN_PAPER_TRADE";
   const hasTinyBDecision =
-    best != null &&
-    evaluatePaperDecision(best).decision === "TINY_B_SETUP_PAPER_ONLY";
+    (best != null && evaluatePaperDecision(best).decision === "TINY_B_SETUP_PAPER_ONLY") ||
+    (input.tinyBExecution?.tinyBEligibleCount ?? 0) > 0;
 
-  const botWorkingVerdict = resolveBotWorkingVerdict({
+  let botWorkingVerdict = resolveBotWorkingVerdict({
     featureHealth: featureScoreHealth,
     pipelineCounts: input.pipelineCounts,
     tradesOpenedThisRun: input.tradesOpenedThisRun,
     bNearMissCount: tinyBEligibility.bNearMissCount,
     hasOpenableDecision,
-    hasTinyBDecision,
+    hasTinyBDecision: hasTinyBDecision && input.tradesOpenedThisRun === 0,
     marketDataStatus: input.marketDataStatus,
   });
+
+  if (
+    input.tinyBExecution &&
+    input.tinyBExecution.tinyBEligibleCount > 0 &&
+    input.tinyBExecution.tinyBOpenedCount === 0 &&
+    input.tradesOpenedThisRun === 0
+  ) {
+    const blocker = input.tinyBExecution.blockers[0];
+    const blockerText = blocker?.reasonText ?? input.tinyBExecution.executionNote;
+    const blockerCode = blocker?.reasonCode ?? "TINY_B_BLOCKED_STRATEGY_LAYER";
+    botWorkingVerdict = {
+      status: blockerCode,
+      headline:
+        blockerCode === "TINY_B_BLOCKED_DUPLICATE_SYMBOL"
+          ? "No new trade — symbol already open"
+          : blockerCode === "TINY_B_BLOCKED_CAUTION_CRITICAL"
+            ? "No new trade — caution mode active"
+            : blockerCode === "TINY_B_BLOCKED_CAPACITY"
+              ? "No new trade — open trade capacity reached"
+              : blockerCode === "TINY_B_BLOCKED_STRATEGY_LAYER"
+                ? "Tiny B eligible but strategy layer blocked"
+                : "Tiny B eligible but not opened — see execution blocker",
+      explanation:
+        blockerText ??
+        "Tiny B was eligible diagnostically but blocked at execution. Review tiny B execution summary.",
+      badMarketVsBrokenBot: "TOO_STRICT",
+      simulatedLabel: "SIMULATED_PAPER_ONLY",
+    };
+  } else if (input.tinyBExecution?.tinyBOpenedCount && input.tinyBExecution.tinyBOpenedCount > 0) {
+    botWorkingVerdict = {
+      status: "PAPER_TINY_B_READY",
+      headline: "Tiny B paper trade opened",
+      explanation: input.tinyBExecution.executionNote ?? "Tiny B paper-only trade opened with reduced size.",
+      badMarketVsBrokenBot: "READY",
+      simulatedLabel: "SIMULATED_PAPER_ONLY",
+    };
+  }
 
   const shadowReplay = buildShadowReplayReport({
     ranked: input.ranked,

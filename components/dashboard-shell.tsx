@@ -419,7 +419,9 @@ interface PaperEvidenceData {
     endedAt: string | null;
     status: string;
     recordPnl: number | null;
+    openTrades: number;
     closedTrades: number;
+    totalOpenedTrades: number;
     winRate: number | null;
     profitFactor: number | null;
   }>;
@@ -1657,6 +1659,26 @@ export function DashboardShell() {
                               <p key={n.symbol}>{n.symbol}: {n.missingCount} missing — {n.exactBlocker}</p>
                             ))}
                           </div>
+                          {(data.paper_evidence as { tinyBExecution?: { tinyBEligibleCount: number; tinyBOpenedCount: number; executionNote: string | null; blockers: Array<{ reasonCode?: string; reasonText: string }> } }).tinyBExecution && (
+                            <div className="rounded border p-2 space-y-1">
+                              <p className="font-medium">Tiny B Execution (latest run)</p>
+                              {(() => {
+                                const te = (data.paper_evidence as { tinyBExecution: { tinyBEligibleCount: number; tinyBOpenedCount: number; executionNote: string | null; blockers: Array<{ reasonCode?: string; reasonText: string }> } }).tinyBExecution;
+                                return (
+                                  <>
+                                    <p>Eligible: {te.tinyBEligibleCount} · Opened: {te.tinyBOpenedCount}</p>
+                                    {te.executionNote && <p>{te.executionNote}</p>}
+                                    {te.blockers.slice(0, 3).map((b, i) => (
+                                      <p key={i} className="text-amber-600">
+                                        {b.reasonCode ? `${b.reasonCode}: ` : ""}
+                                        {b.reasonText}
+                                      </p>
+                                    ))}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          )}
                           <div className="rounded border p-2 space-y-1">
                             <p className="font-medium">10. Safety Locks</p>
                             <p>Live trading: LOCKED · Auto: {d.safetyLocks.autoExecutionLocked ? "LOCKED" : "UNLOCKED"} · P&L: SIMULATED</p>
@@ -2038,7 +2060,8 @@ export function DashboardShell() {
                             Record #{r.recordNumber} — {r.recordName} — {r.status}
                           </p>
                           <p>
-                            P&L: {fmtMetric(r.recordPnl)} SIM · Trades: {r.closedTrades} · Win rate:{" "}
+                            P&L: {fmtMetric(r.recordPnl)} SIM · Open: {r.openTrades ?? 0} · Closed:{" "}
+                            {r.closedTrades} · Opened: {r.totalOpenedTrades ?? r.closedTrades} · Win rate:{" "}
                             {r.winRate !== null ? `${(r.winRate * 100).toFixed(1)}%` : "UNKNOWN"}
                           </p>
                         </div>
@@ -2155,7 +2178,9 @@ export function DashboardShell() {
                             <th className="py-1 pr-2">Ended</th>
                             <th className="py-1 pr-2">Status</th>
                             <th className="py-1 pr-2">P&L</th>
-                            <th className="py-1 pr-2">Trades</th>
+                            <th className="py-1 pr-2">Open</th>
+                            <th className="py-1 pr-2">Closed</th>
+                            <th className="py-1 pr-2">Opened</th>
                             <th className="py-1 pr-2">Win rate</th>
                             <th className="py-1 pr-2">PF</th>
                             <th className="py-1">Export</th>
@@ -2175,7 +2200,9 @@ export function DashboardShell() {
                               <td className="py-1 pr-2">
                                 {r.recordPnl !== null ? `${fmtMetric(r.recordPnl)} SIM` : "UNKNOWN"}
                               </td>
+                              <td className="py-1 pr-2">{r.openTrades ?? 0}</td>
                               <td className="py-1 pr-2">{r.closedTrades}</td>
+                              <td className="py-1 pr-2">{r.totalOpenedTrades ?? 0}</td>
                               <td className="py-1 pr-2">
                                 {r.winRate !== null ? `${(r.winRate * 100).toFixed(1)}%` : "UNKNOWN"}
                               </td>

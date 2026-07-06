@@ -268,6 +268,24 @@ describe("activity feed vs trade history", () => {
     expect(feed.some((e) => e.type === "RECORD_HISTORY_SYNC")).toBe(true);
   });
 
+  it("labels new record trade updates separately from carried updates", () => {
+    const feed = buildRecordActivityFeed([
+      {
+        startedAt: new Date("2026-07-04T20:05:00Z"),
+        status: "COMPLETED",
+        reasonCode: "SCAN_COMPLETE",
+        tradesOpened: 0,
+        tradesUpdated: 2,
+        tradesClosed: 0,
+        scanSummary: {
+          tradeUpdateBreakdown: { newTradesUpdated: 2, carriedTradesUpdated: 0 },
+        },
+      },
+    ]);
+    expect(feed.some((e) => e.type === "NEW_TRADE_UPDATED")).toBe(true);
+    expect(feed.some((e) => e.type === "CARRIED_TRADE_UPDATED")).toBe(false);
+  });
+
   it("uses TRADE_CLOSED only when trades actually closed in that run", () => {
     const feed = buildRecordActivityFeed(
       [

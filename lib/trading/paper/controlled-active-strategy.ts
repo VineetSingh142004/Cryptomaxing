@@ -57,10 +57,16 @@ export function getTradeExpiryHoursForTier(tier: RiskTier): number {
 export function evaluateControlledActiveStrategy(
   candidate: ScanCandidate,
   momentumPct: number,
-  options?: { allocationMultiplier?: number },
+  options?: {
+    allocationMultiplier?: number;
+    paperExecutionMode?: "OPEN_PAPER_TRADE" | "TINY_B_SETUP_PAPER_ONLY";
+  },
 ): ControlledActiveStrategyResult {
   const riskTier = candidate.riskTier;
   const riskPercent = riskPercentForTier(riskTier);
+  const isTinyB = options?.paperExecutionMode === "TINY_B_SETUP_PAPER_ONLY";
+  const isPaperOpen =
+    options?.paperExecutionMode === "OPEN_PAPER_TRADE" || isTinyB;
 
   const base = {
     entryPrice: null as number | null,
@@ -73,7 +79,7 @@ export function evaluateControlledActiveStrategy(
     warning: riskTier === "EXTREME_RISK" ? "EXTREME_RISK_PAPER_ONLY" : undefined,
   };
 
-  if (candidate.action === "WATCHLIST_ONLY") {
+  if (!isPaperOpen && candidate.action === "WATCHLIST_ONLY") {
     return {
       decision: "NO_TRADE",
       confidence: candidate.opportunityScore / 100,
@@ -83,7 +89,7 @@ export function evaluateControlledActiveStrategy(
     };
   }
 
-  if (candidate.action !== "OPEN_TRADE") {
+  if (!isPaperOpen && candidate.action !== "OPEN_TRADE") {
     return {
       decision: "NO_TRADE",
       confidence: candidate.opportunityScore / 100,
@@ -94,9 +100,17 @@ export function evaluateControlledActiveStrategy(
   }
 
   let decision: StrategyDecision = "NO_TRADE";
-  const momentumThreshold = riskTier === "EXTREME_RISK" || riskTier === "HIGH_VOLATILITY" ? 0.02 : 0.05;
+  const momentumThreshold = isTinyB
+    ? 0.005
+    : riskTier === "EXTREME_RISK" || riskTier === "HIGH_VOLATILITY"
+      ? 0.02
+      : 0.05;
 
-  if (momentumPct > momentumThreshold || candidate.change24hPct > SCANNER_CONFIG.min24hChangePct) {
+  const hasMomentum =
+    momentumPct > momentumThreshold ||
+    (isTinyB && (candidate.momentumScore ?? 0) >= 35) ||
+    candidate.change24hPct > SCANNER_CONFIG.min24hChangePct;
+  if (hasMomentum) {
     decision = "LONG";
   } else if (momentumPct < -momentumThreshold && PAPER_CONFIG.allowShort) {
     decision = "SHORT";
@@ -213,11 +227,15 @@ export function evaluateControlledActiveStrategy(
         ? "HIGH_VOLATILITY_PAPER_ONLY"
         : undefined;
 
+  const tinyBPrefix = isTinyB
+    ? "TINY B PAPER-ONLY TEST — reduced size, strict stop, no live, no Auto. | "
+    : "";
+
   return {
     decision,
     confidence: Math.min(0.95, confidence),
-    reason: `${decision} — ${riskTier}, score ${candidate.opportunityScore.toFixed(0)}, 24h ${candidate.change24hPct.toFixed(1)}% | R:R ${rrCheck.rewardRiskRatio.toFixed(2)} EV ${rrCheck.expectedValueUsd >= 0 ? "+" : ""}${rrCheck.expectedValueUsd.toFixed(2)} SIM | ${sizing.sizingReason}`,
-    reasonCode: "TRADE_READY",
+    reason: `${tinyBPrefix}${decision} — ${riskTier}, score ${candidate.opportunityScore.toFixed(0)}, 24h ${candidate.change24hPct.toFixed(1)}% | R:R ${rrCheck.rewardRiskRatio.toFixed(2)} EV ${rrCheck.expectedValueUsd >= 0 ? "+" : ""}${rrCheck.expectedValueUsd.toFixed(2)} SIM | ${sizing.sizingReason}`,
+    reasonCode: isTinyB ? "TINY_B_SETUP_PAPER_ONLY" : "TRADE_READY",
     entryPrice: mid,
     plannedStopLoss,
     plannedTakeProfit,
