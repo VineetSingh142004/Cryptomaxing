@@ -8,6 +8,8 @@ import {
   type PaperPerformanceSummary,
 } from "@/lib/trading/paper/performance-summary";
 import { CURRENT_PAPER_STRATEGY_VERSION } from "@/lib/trading/paper/paper-strategy-version";
+import { V8_RECORD_NAME, V8_STRATEGY_VERSION } from "@/lib/trading/paper/v8-readiness";
+import type { V8ReadinessCheck } from "@/lib/trading/paper/v8-readiness";
 import {
   buildCarriedClosedTradeSnapshots,
   buildCleanFreshStartStatus,
@@ -925,8 +927,21 @@ export async function startNewPaperRecord(input: {
   notes?: string;
   carryOpenTrades?: boolean;
   startMode?: PaperRecordStartMode;
+  v8Readiness?: V8ReadinessCheck | null;
 }): Promise<StartNewRecordResult> {
   const startMode = input.startMode ?? "soft";
+  const recordName = input.recordName?.trim() || "";
+  const isV8Start =
+    recordName === V8_RECORD_NAME || /V8 Data-Healthy/i.test(recordName);
+  if (isV8Start && !input.v8Readiness?.ready) {
+    const blockers = input.v8Readiness?.blockers ?? ["V8 readiness not evaluated"];
+    return {
+      ok: false,
+      reason: "V8_NOT_READY",
+      startMode,
+      message: `V8 cannot start until data health passes: ${blockers.join("; ")}`,
+    };
+  }
   await ensurePaperRecords(input.userId);
   const active = await getActivePaperRecord(input.userId);
   if (!active) {
@@ -991,8 +1006,8 @@ export async function startNewPaperRecord(input: {
     data: {
       userId: input.userId,
       recordNumber,
-      recordName: input.recordName?.trim() || autoName,
-      strategyVersion: CURRENT_PAPER_STRATEGY_VERSION,
+      recordName: recordName || autoName,
+      strategyVersion: isV8Start ? V8_STRATEGY_VERSION : CURRENT_PAPER_STRATEGY_VERSION,
       startedAt: now,
       status: "ACTIVE",
       startingPaperBalance: accountValueNow,

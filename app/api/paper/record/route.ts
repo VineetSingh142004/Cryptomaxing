@@ -10,6 +10,8 @@ import {
   startNewPaperRecord,
 } from "@/lib/trading/paper/paper-record";
 import { CURRENT_PAPER_STRATEGY_VERSION } from "@/lib/trading/paper/paper-strategy-version";
+import { getPaperStatus } from "@/lib/trading/paper/evidence-service";
+import { V8_RECORD_NAME } from "@/lib/trading/paper/v8-readiness";
 import { verifyPaperSafetyGates } from "@/lib/trading/paper/safety-verification";
 import { logger } from "@/lib/logger";
 
@@ -55,12 +57,18 @@ export async function POST(request: Request) {
       startMode?: "soft" | "clean";
     };
 
+    const recordName = body.recordName?.trim();
+    const isV8Start =
+      recordName === V8_RECORD_NAME || (recordName != null && /V8 Data-Healthy/i.test(recordName));
+    const v8Readiness = isV8Start ? (await getPaperStatus()).v8Readiness : null;
+
     const result = await startNewPaperRecord({
       userId,
       recordName: body.recordName,
       notes: body.notes,
       carryOpenTrades: body.carryOpenTrades === true,
       startMode: body.startMode === "clean" ? "clean" : "soft",
+      v8Readiness,
     });
 
     if (!result.ok) {

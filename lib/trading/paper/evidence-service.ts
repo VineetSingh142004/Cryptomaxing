@@ -86,6 +86,13 @@ import { evaluateProfitLockState, evaluateRecordProfitLock } from "@/lib/trading
 import { evaluateOpportunityCost } from "@/lib/trading/paper/opportunity-cost-engine";
 import { buildWhyNoTradeReport } from "@/lib/trading/paper/why-no-trade-report";
 import { buildPaperRunDiagnostics } from "@/lib/trading/paper/paper-diagnostics";
+import { evaluateProviderHealth } from "@/lib/trading/paper/provider-health-gate";
+import { buildFeatureScoreHealth } from "@/lib/trading/paper/feature-score-health";
+import { evaluateEntryQualityBlockers, tinyBEntryQualityBlock } from "@/lib/trading/paper/entry-quality";
+import { evaluateExitQuality } from "@/lib/trading/paper/exit-quality";
+import { computeProfitQualityScore } from "@/lib/trading/paper/profit-quality-score";
+import { buildV6LossPostmortemReport } from "@/lib/trading/paper/v6-loss-postmortem";
+import { evaluateV8Readiness } from "@/lib/trading/paper/v8-readiness";
 import {
   buildNoTradeDiagnosticRow,
   emptyTinyBExecutionSummary,
@@ -451,6 +458,45 @@ async function updateOpenTrade(
     peakUnrealizedPnl: profitLock.peakUnrealizedPnl,
     profitLock,
   });
+
+  const spreadBpsNow =
+    snapshot?.ticker && markPrice > 0
+      ? ((snapshot.ticker.ask - snapshot.ticker.bid) / markPrice) * 10_000
+      : null;
+  const entrySpreadMatch = trade.reason?.match(/spread:\s*([\d.]+)/i);
+  const entrySpreadBps = entrySpreadMatch ? parseFloat(entrySpreadMatch[1]) : null;
+  const exitQuality = evaluateExitQuality({
+    side: trade.side,
+    entryPrice: entry,
+    markPrice,
+    unrealizedPnl: unrealized,
+    peakUnrealizedPnl: options?.peakUnrealizedPnl ?? profitLock.peakUnrealizedPnl,
+    plannedStopLoss: stop,
+    plannedTakeProfit: tp,
+    runsHeld: options?.runsHeld ?? 1,
+    thesisStatus: thesisReview?.status,
+    thesisRecommendation: thesisReview?.recommendation,
+    spreadBps: spreadBpsNow,
+    entrySpreadBps,
+    closeReason: shouldClose ? closeReason : undefined,
+  });
+
+  if (
+    !shouldClose &&
+    (exitQuality.recommendation === "EXIT_EARLY" ||
+      exitQuality.recommendation === "THESIS_INVALIDATED_EXIT" ||
+      exitQuality.recommendation === "PROFIT_LOCK_EXIT")
+  ) {
+    shouldClose = true;
+    exitPrice = markPrice;
+    closeReason =
+      exitQuality.recommendation === "THESIS_INVALIDATED_EXIT"
+        ? "TRUE_INVALIDATION_EXIT"
+        : exitQuality.recommendation === "PROFIT_LOCK_EXIT"
+          ? "WEAK_THESIS_EXIT"
+          : "EARLY_LOSS_CUT";
+    riskExplanation = exitQuality.reasons.join("; ");
+  }
 
   const oppCost = evaluateOpportunityCost({
     openTrade: {
@@ -1669,6 +1715,40 @@ export async function getPaperStatus() {
   const paperRunDiagnostics =
     (latestRunSummary.paperRunDiagnostics as ReturnType<typeof buildPaperRunDiagnostics> | undefined) ??
     null;
+  const v6Archived = recordHistory.find((r) => r.recordNumber === 6 || r.recordName.includes("V6"));
+  const v6Trades =
+    v6Archived != null
+      ? allUserTrades.filter((t) => t.recordId === v6Archived.recordId)
+      : [];
+  const v6LossPostmortem =
+    v6Archived != null
+      ? buildV6LossPostmortemReport({
+          recordNumber: v6Archived.recordNumber,
+          recordName: v6Archived.recordName,
+          totalPnl: v6Archived.recordPnl ?? -65.452,
+          trades: v6Trades,
+        })
+      : null;
+  const latestProviderHealth = latestRunSummary.providerHealth as
+    | import("@/lib/trading/paper/provider-health-gate").ProviderHealthGateResult
+    | undefined;
+  const latestRanked = (latestRunSummary.rankedCandidates ?? []) as Array<{
+    tradableOnConfiguredExchange?: boolean;
+  }>;
+  const v8Readiness = evaluateV8Readiness({
+    providerHealth:
+      latestProviderHealth ??
+      evaluateProviderHealth({
+        krakenStatus: "unavailable",
+        coingeckoStatus: "skipped",
+        featureHealth: paperRunDiagnostics?.featureScoreHealth ?? null,
+      }),
+    featureHealth: paperRunDiagnostics?.featureScoreHealth ?? null,
+    rankedCount: latestRanked.length,
+    tradableRankedCount: latestRanked.filter((c) => c.tradableOnConfiguredExchange).length,
+    v6Postmortem: v6LossPostmortem,
+    accountingSyncOk: true,
+  });
   const tinyBExecution =
     (latestRunSummary.tinyBExecution as import("@/lib/trading/paper/tiny-b-execution").TinyBExecutionSummary | undefined) ??
     null;
@@ -1894,6 +1974,15 @@ export async function getPaperStatus() {
     profitQuality,
     historyDiagnostic,
     evidenceCollectionMessage,
+    providerHealth: latestProviderHealth ?? null,
+    discoveryCandidates:
+      (latestRunSummary.discoveryCandidates as Array<{
+        symbol: string;
+        reasonCode: string;
+        source: string;
+      }>) ?? [],
+    v6LossPostmortem,
+    v8Readiness,
     hasPaperRuns: stats.paperRuns > 0,
     safetyVerification,
     liveTradingLocked: true as const,
@@ -2313,9 +2402,33 @@ export async function runPaperEvidenceStep(options?: {
   }
 
   const split = splitCandidates(ranked);
-  const topToEvaluate = ranked
-    .filter((c) => passedHardSafetyFilters(c))
+  const featureHealthPreview = buildFeatureScoreHealth({
+    ranked,
+    providerSource: wideResult.activeDataSources?.join(", "),
+  });
+  const tradUnknownCount = ranked.filter(
+    (c) => c.reasonCode === "EXCHANGE_AVAILABILITY_UNKNOWN" || c.discoveryOnly,
+  ).length;
+  const providerHealth = evaluateProviderHealth({
+    krakenStatus: wideResult.krakenStatus,
+    krakenError: wideResult.krakenError,
+    coingeckoStatus: wideResult.coingeckoStatus,
+    krakenFallbackUsed: wideResult.krakenFallbackUsed,
+    krakenCacheStatus: wideResult.krakenCacheStatus ?? null,
+    candlesLoadedPct: featureHealthPreview.candlesLoadedPct,
+    tradabilityUnknownPct: ranked.length > 0 ? tradUnknownCount / ranked.length : 0,
+    featureHealth: featureHealthPreview,
+  });
+
+  let topToEvaluate = ranked
+    .filter((c) => passedHardSafetyFilters(c) && !c.discoveryOnly)
     .slice(0, SCANNER_CONFIG.topCandidates);
+
+  if (!providerHealth.tradeReadyCandidatesAllowed) {
+    runWarnings.push(providerHealth.dashboardMessage);
+    topToEvaluate = [];
+    latestAction = providerHealth.reasonCode as PaperRunAction;
+  }
   const rejectedCandidates = ranked.filter((c) => c.action !== "OPEN_TRADE");
   const rejectionSummary = summarizeRejections(ranked);
 
@@ -2388,6 +2501,12 @@ export async function runPaperEvidenceStep(options?: {
     return views;
   }
 
+  const btcRegimeCandidate = ranked.find((c) => c.symbol === "BTC/USD");
+  const ethRegimeCandidate = ranked.find((c) => c.symbol === "ETH/USD");
+  const btcShortReturnPct = btcRegimeCandidate?.shortTermReturnPct ?? null;
+  const ethShortReturnPct = ethRegimeCandidate?.shortTermReturnPct ?? null;
+  const providerDiscoveryOnly = providerHealth.discoveryOnly;
+
   for (const candidate of topToEvaluate) {
     if (newTradesThisRun >= SCANNER_CONFIG.maxNewTradesPerRun) break;
 
@@ -2451,6 +2570,42 @@ export async function runPaperEvidenceStep(options?: {
           candidate,
           paperDecision,
           blocker: execBlock.reasonText,
+          timestamp: now.toISOString(),
+        }),
+      );
+      tradeReadyNotOpenedSymbols.add(candidate.symbol);
+      noTradeCount++;
+      continue;
+    }
+
+    const pullbackConfirmed = /pullback|vwap reclaim/i.test(
+      paperDecision.mapping?.strategyName ?? "",
+    );
+    const entryQuality =
+      paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY"
+        ? tinyBEntryQualityBlock({ candidate, providerDiscoveryOnly })
+        : evaluateEntryQualityBlockers({
+            candidate,
+            btcShortReturnPct,
+            ethShortReturnPct,
+            pullbackStrategyConfirmed: pullbackConfirmed,
+            providerDiscoveryOnly,
+          });
+    if (entryQuality.blocked) {
+      const entryBlock = {
+        symbol: candidate.symbol,
+        reasonCode: entryQuality.reasonCode ?? "ENTRY_QUALITY_BLOCKED",
+        reasonText: entryQuality.reasonText ?? "Entry quality blocker",
+        simulatedLabel: "SIMULATED_PAPER_ONLY" as const,
+      };
+      if (paperDecision.decision === "TINY_B_SETUP_PAPER_ONLY") {
+        tinyBExecution.blockers.push(entryBlock);
+      }
+      tinyBExecution.noTradeDiagnostics.push(
+        buildNoTradeDiagnosticRow({
+          candidate,
+          paperDecision,
+          blocker: entryBlock.reasonText,
           timestamp: now.toISOString(),
         }),
       );
@@ -2815,6 +2970,7 @@ export async function runPaperEvidenceStep(options?: {
     marketDataStatus,
     timestamp: finishedAt.toISOString(),
     tinyBExecution,
+    providerHealth,
   });
 
   const databaseWriteFailed =
@@ -2958,6 +3114,19 @@ export async function runPaperEvidenceStep(options?: {
           newTradesUpdated,
           carriedTradesUpdated,
         },
+        providerHealth,
+        discoveryCandidates: ranked.filter((c) => c.discoveryOnly).map((c) => ({
+          symbol: c.symbol,
+          reasonCode: c.reasonCode,
+          source: c.source,
+        })),
+        rankedCandidates: ranked.map((c) => ({
+          symbol: c.symbol,
+          tradableOnConfiguredExchange: c.tradableOnConfiguredExchange,
+          candlesLoaded: c.candlesLoaded,
+          breakoutScoreStatus: c.breakoutScoreStatus,
+          trendScoreStatus: c.trendScoreStatus,
+        })),
         whyNoTradeReport,
         paperRunDiagnostics,
         tinyBExecution,

@@ -1509,6 +1509,74 @@ export function DashboardShell() {
                   </div>
                 )}
 
+                {isCurrentRecordView &&
+                  (data?.paper_evidence as { providerHealth?: { headline: string; dashboardMessage: string; status: string; krakenCacheLabel: string | null } } | undefined)
+                    ?.providerHealth && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 space-y-2">
+                    <p className="text-sm font-semibold">Provider Health Gate (SIMULATED)</p>
+                    <p className="text-xs font-medium">
+                      {(data!.paper_evidence as { providerHealth: { status: string; headline: string } }).providerHealth.status}
+                      {" — "}
+                      {(data!.paper_evidence as { providerHealth: { headline: string } }).providerHealth.headline}
+                    </p>
+                    <p className="text-xs">
+                      {(data!.paper_evidence as { providerHealth: { dashboardMessage: string } }).providerHealth.dashboardMessage}
+                    </p>
+                    {(data!.paper_evidence as { providerHealth: { krakenCacheLabel: string | null } }).providerHealth.krakenCacheLabel && (
+                      <p className="text-xs text-muted-foreground">
+                        Cache: {(data!.paper_evidence as { providerHealth: { krakenCacheLabel: string | null } }).providerHealth.krakenCacheLabel}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {isCurrentRecordView &&
+                  ((data?.paper_evidence as { discoveryCandidates?: Array<{ symbol: string; reasonCode: string; source: string }> } | undefined)
+                    ?.discoveryCandidates?.length ?? 0) > 0 && (
+                  <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-4 space-y-2">
+                    <p className="text-sm font-semibold">Discovery / Watchlist Only (NOT trade-ready)</p>
+                    <p className="text-xs text-muted-foreground">COINGECKO_DISCOVERY_ONLY_NOT_TRADEABLE — not A/B/Tiny B eligible</p>
+                    <ul className="text-xs space-y-1">
+                      {(data!.paper_evidence as { discoveryCandidates: Array<{ symbol: string; reasonCode: string; source: string }> }).discoveryCandidates.slice(0, 10).map((c) => (
+                        <li key={c.symbol}>{c.symbol} ({c.source}) — {c.reasonCode}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {isCurrentRecordView &&
+                  (data?.paper_evidence as { v6LossPostmortem?: { summaryVerdict: string; lessons: Array<{ commonPattern: string; ruleToAdd: string; prevention: string; lossCharacter: string }>; closedTradeDetails: Array<{ symbol: string; netPnl: number; lesson: string; avoidable: boolean }> } } | undefined)
+                    ?.v6LossPostmortem && (
+                  <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4 space-y-2">
+                    <p className="text-sm font-semibold">V6 Loss Lessons (SIMULATED postmortem)</p>
+                    <p className="text-xs">
+                      {(data!.paper_evidence as { v6LossPostmortem: { summaryVerdict: string } }).v6LossPostmortem.summaryVerdict}
+                    </p>
+                    {(data!.paper_evidence as { v6LossPostmortem: { lessons: Array<{ commonPattern: string; ruleToAdd: string; prevention: string; lossCharacter: string }> } }).v6LossPostmortem.lessons.map((l, i) => (
+                      <div key={i} className="text-xs border-t pt-1">
+                        <p className="font-medium">{l.commonPattern} ({l.lossCharacter})</p>
+                        <p>Rule: {l.ruleToAdd}</p>
+                        <p>Would prevent: {l.prevention}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {isCurrentRecordView &&
+                  (data?.paper_evidence as { v8Readiness?: { ready: boolean; message: string; blockers: string[] } } | undefined)
+                    ?.v8Readiness && (
+                  <div className={`rounded-lg border p-4 space-y-2 ${(data!.paper_evidence as { v8Readiness: { ready: boolean } }).v8Readiness.ready ? "border-green-500/30 bg-green-500/5" : "border-orange-500/30 bg-orange-500/5"}`}>
+                    <p className="text-sm font-semibold">V8 Readiness — Data-Healthy Profit Quality Test</p>
+                    <p className="text-xs">
+                      {(data!.paper_evidence as { v8Readiness: { message: string } }).v8Readiness.message}
+                    </p>
+                    {!((data!.paper_evidence as { v8Readiness: { ready: boolean } }).v8Readiness.ready) &&
+                      (data!.paper_evidence as { v8Readiness: { blockers: string[] } }).v8Readiness.blockers.map((b) => (
+                        <p key={b} className="text-xs text-muted-foreground">• {b}</p>
+                      ))}
+                  </div>
+                )}
+
                 {isCurrentRecordView && data?.paper_evidence?.whyNoTradeReport && (
                   <div className="rounded-lg border p-4 space-y-2">
                     <p className="text-sm font-semibold">Why No Trade Opened (SIMULATED)</p>

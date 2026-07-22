@@ -16,6 +16,13 @@ import { loadKrakenPairIndex } from "@/lib/trading/exchange/availability-service
 import { isConfirmedTradable, isUnconfirmedTradable } from "@/lib/trading/exchange/availability-types";
 import type { ExchangeAvailabilityResult } from "@/lib/trading/exchange/availability-types";
 import {
+  saveKrakenLastGoodCache,
+  resolveKrakenCacheStatus,
+  restorePairMapFromCache,
+  restoreTradableSymbolSetFromCache,
+  type KrakenCacheStatus,
+} from "@/lib/trading/paper/kraken-last-good-cache";
+import {
   finalizePipelineStats,
   computeCoinsFilteredOut,
   type ScanPipelineStats,
@@ -60,6 +67,7 @@ export interface WideUniverseResult {
   krakenStatus: "ok" | "unavailable";
   krakenError?: string;
   krakenFallbackUsed?: boolean;
+  krakenCacheStatus?: KrakenCacheStatus;
   dexscreenerStatus: ProviderStatus;
   defillamaStatus: ProviderStatus;
   lunarcrushStatus: ProviderStatus;
@@ -232,16 +240,25 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
     );
     krakenCandidates = krakenUniverse.topByVolume.map((r) => toTieredFromKraken(r));
     krakenUniverseSize = krakenUniverse.universeSize;
+    saveKrakenLastGoodCache({
+      pairMap: krakenUniverse.pairMap,
+      tradableSymbols: krakenUniverse.symbols,
+    });
   } catch (err) {
     krakenStatus = "unavailable";
     krakenError = formatKrakenFetchError(err);
     krakenFallbackUsed = dataSources.includes("coingecko");
+    const cachedPairMap = restorePairMapFromCache();
+    const cachedSymbols = restoreTradableSymbolSetFromCache();
+    if (cachedPairMap) pairMap = cachedPairMap;
+    if (cachedSymbols) allKrakenSymbols = cachedSymbols;
   }
 
+  const krakenCacheStatus = resolveKrakenCacheStatus();
+
   const pairIndex = await loadKrakenPairIndex({ bypassCache: options?.bypassCache });
-  if (krakenStatus === "unavailable") {
+  if (krakenStatus === "unavailable" && pairMap.size === 0) {
     allKrakenSymbols = pairIndex.allSpotSymbols();
-    pairMap = new Map();
   }
 
   let dexscreenerStatus: ProviderStatus =
@@ -345,14 +362,15 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
     .slice(0, SCANNER_CONFIG.topCandidates);
 
   const tradablePaperCandidates = dedupeBySymbol(
-    filtered.filter((c) => c.tradableOnConfiguredExchange),
+    filtered.filter((c) => c.tradableOnConfiguredExchange && c.source === "kraken"),
   ).slice(0, SCANNER_CONFIG.maxEvaluatedCoins);
 
   const watchlistOnlyCandidates = dedupeBySymbol(
     filtered.filter(
       (c) =>
-        (!c.tradableOnConfiguredExchange || isUnconfirmedTradable(c.availability)) &&
-        Math.abs(c.change24hPct) >= SCANNER_CONFIG.min24hChangePct,
+        c.source === "coingecko" ||
+        !c.tradableOnConfiguredExchange ||
+        isUnconfirmedTradable(c.availability),
     ),
   )
     .sort((a, b) => Math.abs(b.change24hPct) - Math.abs(a.change24hPct))
@@ -402,6 +420,7 @@ export async function buildWideUniverse(options?: { bypassCache?: boolean }): Pr
     krakenStatus,
     krakenError,
     krakenFallbackUsed,
+    krakenCacheStatus,
     dexscreenerStatus,
     defillamaStatus,
     lunarcrushStatus,

@@ -7,6 +7,7 @@ export type FeatureScoreWarningFlag =
   | "MOMENTUM_TOO_LOW_FOR_ALL_CANDIDATES"
   | "CANDLES_MISSING_FOR_STRATEGY"
   | "STRATEGY_FEATURES_NOT_COMPUTED"
+  | "STRATEGY_SCORING_BLOCKED_NO_CANDLES"
   | "MARKET_WEAK_NOT_BUG";
 
 export interface ScoreDistribution {
@@ -134,8 +135,16 @@ export function buildFeatureScoreHealth(input: {
 
   const distributions = {
     momentumScore: computeScoreDistribution(ranked.map((c) => c.momentumScore ?? 0)),
-    trendScore: computeScoreDistribution(ranked.map((c) => c.trendScore ?? 0)),
-    breakoutScore: computeScoreDistribution(ranked.map((c) => c.breakoutScore ?? 0)),
+    trendScore: computeScoreDistribution(
+      ranked
+        .filter((c) => c.trendScoreStatus !== "NOT_COMPUTED")
+        .map((c) => c.trendScore ?? 0),
+    ),
+    breakoutScore: computeScoreDistribution(
+      ranked
+        .filter((c) => c.breakoutScoreStatus !== "NOT_COMPUTED")
+        .map((c) => c.breakoutScore ?? 0),
+    ),
     volatilityScore: computeScoreDistribution(ranked.map((c) => c.volatilityScore ?? 0)),
     liquidityScore: computeScoreDistribution(ranked.map((c) => c.liquidityScore ?? 0)),
     volumeScore: computeScoreDistribution(ranked.map((c) => c.scoreBreakdown?.volumeScore ?? 0)),
@@ -159,6 +168,12 @@ export function buildFeatureScoreHealth(input: {
   }
   if (ranked.length > 0 && distributions.momentumScore.max < 30) {
     warningFlags.push("MOMENTUM_TOO_LOW_FOR_ALL_CANDIDATES");
+  }
+  const notComputedBreakout = ranked.filter((c) => c.breakoutScoreStatus === "NOT_COMPUTED").length;
+  const notComputedTrend = ranked.filter((c) => c.trendScoreStatus === "NOT_COMPUTED").length;
+
+  if (missingCandles || (notComputedBreakout > ranked.length * 0.5 && ranked.length > 0)) {
+    warningFlags.push("STRATEGY_SCORING_BLOCKED_NO_CANDLES");
   }
   if (missingCandles) warningFlags.push("CANDLES_MISSING_FOR_STRATEGY");
   if (

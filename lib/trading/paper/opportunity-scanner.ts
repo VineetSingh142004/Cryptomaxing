@@ -11,7 +11,12 @@ import {
 } from "@/lib/trading/paper/scanner-config";
 import type { UniverseTickerRow } from "@/lib/trading/paper/kraken-universe";
 import type { TieredCandidate } from "@/lib/trading/paper/wide-universe";
-import { computeWeightedScore, emptyScoreBreakdown, type ScoreBreakdown } from "@/lib/trading/paper/scoring";
+import { sanitizeChange24hPct, shouldExcludeFromScoring } from "@/lib/trading/paper/field-sanitization";
+import {
+  computeStrategyFeatureScores,
+  type StrategyScoreStatus,
+} from "@/lib/trading/paper/strategy-score-state";
+import { computeWeightedScore, type ScoreBreakdown } from "@/lib/trading/paper/scoring";
 import { evaluateTradeSelection } from "@/lib/trading/paper/trade-selection";
 
 export type CandidateAction = "OPEN_TRADE" | "NO_TRADE" | "SKIPPED" | "WATCHLIST_ONLY";
@@ -38,6 +43,13 @@ export interface ScanCandidate {
   riskTier: RiskTier;
   shortTermReturnPct: number;
   breakoutScore: number;
+  breakoutScoreStatus?: StrategyScoreStatus;
+  trendScoreStatus?: StrategyScoreStatus;
+  discoveryOnly?: boolean;
+  providerAnomalyFlags?: string[];
+  change24hRaw?: number;
+  change24hDrivesScore?: boolean;
+  profitQualityScore?: number | null;
   source: string;
   tradableOnConfiguredExchange: boolean;
   availability: ExchangeAvailabilityResult;
@@ -145,34 +157,40 @@ export function buildScanCandidateFromTiered(input: {
   const confirmed = isConfirmedTradable(availability);
 
   if (!snapshot) {
-    const pumpRisk = computePumpRiskPenalty(tiered.change24hPct, tiered.volume24hUsd, tiered.spreadBps ?? 999);
+    const changeSan = sanitizeChange24hPct(tiered.change24hPct);
+    const pumpRisk = computePumpRiskPenalty(changeSan.value, tiered.volume24hUsd, tiered.spreadBps ?? 999);
     const riskPenalty = computeRiskPenalty(tiered.riskTier, tiered.spreadBps ?? 999, tiered.volume24hUsd);
+    const discoveryOnly = tiered.source === "coingecko" && !confirmed;
+    const anomalyFlags = changeSan.outlier ? ["DATA_OUTLIER_SANITIZED"] : [];
     const scoreBreakdown = computeWeightedScore({
       volume24hUsd: tiered.volume24hUsd,
-      change24hPct: tiered.change24hPct,
+      change24hPct: changeSan.outlier ? 0 : changeSan.value,
       change1hPct: tiered.change1hPct,
       marketCapUsd: tiered.marketCapUsd,
       spreadBps: tiered.spreadBps ?? 50,
-      momentumPct: (tiered.change1hPct ?? 0) || tiered.change24hPct * 0.05,
-      volatilityPct: Math.abs(tiered.change24hPct),
+      momentumPct: (tiered.change1hPct ?? 0) || changeSan.value * 0.05,
+      volatilityPct: Math.abs(changeSan.value),
       shortTermReturnPct: tiered.change1hPct ?? 0,
       breakoutScore: 0,
       volumeSpikeScore: 50,
-      dataQualityScore: 60,
+      dataQualityScore: changeSan.outlier ? 30 : 60,
       riskTier: tiered.riskTier,
       availability,
       pumpRiskPenalty: pumpRisk,
       riskTierPenalty: riskPenalty,
     });
-    const opportunityScore = scoreBreakdown.finalScore;
+    const opportunityScore = changeSan.outlier || shouldExcludeFromScoring(changeSan)
+      ? Math.min(scoreBreakdown.finalScore, 40)
+      : scoreBreakdown.finalScore;
 
-    if (!confirmed) {
+    if (!confirmed || discoveryOnly) {
       return {
         symbol: tiered.symbol,
         price: tiered.price,
         spreadBps: tiered.spreadBps ?? 0,
         volume24hUsd: tiered.volume24hUsd,
-        change24hPct: tiered.change24hPct,
+        change24hPct: changeSan.value,
+        change24hRaw: changeSan.rawValue,
         change1hPct: tiered.change1hPct,
         change7dPct: tiered.change7dPct ?? null,
         marketCapUsd: tiered.marketCapUsd,
@@ -182,6 +200,7 @@ export function buildScanCandidateFromTiered(input: {
         liquidityScore: scoreBreakdown.liquidityScore,
         spreadScore: scoreBreakdown.spreadScore,
         trendScore: scoreBreakdown.trendStrengthScore,
+        trendScoreStatus: "NOT_COMPUTED",
         dataQualityScore: scoreBreakdown.dataQualityScore,
         riskPenalty,
         pumpRiskPenalty: pumpRisk,
@@ -190,18 +209,30 @@ export function buildScanCandidateFromTiered(input: {
         riskTier: tiered.riskTier,
         shortTermReturnPct: tiered.change1hPct ?? 0,
         breakoutScore: 0,
+        breakoutScoreStatus: "NOT_COMPUTED",
+        discoveryOnly: true,
+        providerAnomalyFlags: anomalyFlags,
+        change24hDrivesScore: changeSan.outlier,
         source: tiered.source,
         tradableOnConfiguredExchange: false,
         availability,
         coinName: tiered.name,
         action: "WATCHLIST_ONLY",
         actionType: "WATCHLIST_ONLY",
-        reasonCode: unconfirmed ? "EXCHANGE_AVAILABILITY_UNKNOWN" : "NOT_TRADABLE_ON_EXCHANGE",
+        reasonCode: unconfirmed
+          ? "EXCHANGE_AVAILABILITY_UNKNOWN"
+          : changeSan.outlier
+            ? "DATA_OUTLIER_SANITIZED"
+            : tiered.source === "coingecko"
+              ? "COINGECKO_DISCOVERY_ONLY_NOT_TRADEABLE"
+              : "NOT_TRADABLE_ON_EXCHANGE",
         reasonText:
-          availability.availabilityNote ??
-          (unconfirmed
-            ? "Detected by CoinGecko/DexScreener, but not confirmed tradable on connected exchange."
-            : "High-momentum coin found, but not tradable on configured exchange."),
+          changeSan.outlier
+            ? `Provider 24h change outlier (${changeSan.rawValue.toFixed(0)}%) — watchlist only`
+            : availability.availabilityNote ??
+              (unconfirmed
+                ? "Detected by CoinGecko — Kraken tradability not confirmed. Discovery/watchlist only."
+                : "High-momentum coin found, but not tradable on configured exchange."),
         candleCount: 0,
         candlesLoaded: false,
       };
@@ -285,29 +316,39 @@ export function buildScanCandidate(input: {
   const source = tiered?.source ?? "kraken";
   const maxSpread = maxSpreadForTier(riskTier);
 
+  const changeSan = sanitizeChange24hPct(change24hPct);
+  const anomalyFlags = changeSan.outlier ? ["DATA_OUTLIER_SANITIZED"] : [];
+
   const quality = assessDataQuality({ snapshot, requiresOrderBook: false });
   const dataQualityScore = quality.tradable
     ? clamp(100 - quality.reasonCodes.length * 15)
     : clamp(40 - quality.reasonCodes.length * 10);
 
+  const strategyFeatures = computeStrategyFeatureScores({
+    candles: snapshot.candles5m,
+    change1hPct,
+    trendStrengthFromFormula: undefined,
+  });
+
   const mom = momentumFromCandles(snapshot.candles5m);
   const volPct = volatilityPct(snapshot.candles5m);
-  const ret = shortTermReturn(snapshot.candles5m);
-  const breakout = breakoutScore(snapshot.candles5m);
+  const ret = strategyFeatures.shortTermReturnPct ?? shortTermReturn(snapshot.candles5m);
+  const breakout = strategyFeatures.breakoutScore ?? 0;
+  const trendVal = strategyFeatures.trendScore ?? 0;
   const volSpike = volumeSpikeFromSnapshot(snapshot);
-  const pumpRiskPenalty = computePumpRiskPenalty(change24hPct, volume24hUsd, spreadBps);
+  const pumpRiskPenalty = computePumpRiskPenalty(changeSan.value, volume24hUsd, spreadBps);
   const riskPenalty = computeRiskPenalty(riskTier, spreadBps, volume24hUsd);
 
   const scoreBreakdown = computeWeightedScore({
     volume24hUsd,
-    change24hPct,
+    change24hPct: changeSan.outlier ? 0 : changeSan.value,
     change1hPct,
     marketCapUsd,
     spreadBps,
     momentumPct: mom,
     volatilityPct: volPct,
     shortTermReturnPct: ret,
-    breakoutScore: breakout,
+    breakoutScore: strategyFeatures.breakoutScoreStatus === "NOT_COMPUTED" ? 0 : breakout,
     volumeSpikeScore: volSpike,
     dataQualityScore,
     riskTier,
@@ -316,7 +357,9 @@ export function buildScanCandidate(input: {
     riskTierPenalty: riskPenalty,
   });
 
-  const opportunityScore = scoreBreakdown.finalScore;
+  const opportunityScore = changeSan.outlier
+    ? Math.min(scoreBreakdown.finalScore, 45)
+    : scoreBreakdown.finalScore;
 
   let reasonCode: PaperReasonCode | string = "SCORE_TOO_LOW";
   let reasonText = "Awaiting evaluation";
@@ -346,6 +389,15 @@ export function buildScanCandidate(input: {
     reasonCode = "OHLC_MISSING";
     reasonText = "Insufficient OHLC candles";
     actionType = "REJECTED";
+  } else if (strategyFeatures.blockReason === "STRATEGY_SCORING_BLOCKED_NO_CANDLES") {
+    reasonCode = "STRATEGY_SCORING_BLOCKED_NO_CANDLES";
+    reasonText = "Fewer than 10 candles — breakout/trend NOT_COMPUTED";
+    actionType = "REJECTED";
+  } else if (changeSan.outlier) {
+    reasonCode = "DATA_OUTLIER_SANITIZED";
+    reasonText = `Provider 24h change outlier (${changeSan.rawValue.toFixed(0)}%) — excluded from scoring`;
+    actionType = "WATCHLIST_ONLY";
+    action = "WATCHLIST_ONLY";
   } else if (volume24hUsd < SCANNER_CONFIG.min24hVolumeUsd) {
     reasonCode = "VOLUME_TOO_LOW";
     reasonText = `24h volume $${volume24hUsd.toFixed(0)} below minimum`;
@@ -407,14 +459,15 @@ export function buildScanCandidate(input: {
   const volatilityScore = scoreBreakdown.volatilityScore;
   const liquidityScore = scoreBreakdown.liquidityScore;
   const spreadScore = scoreBreakdown.spreadScore;
-  const trendScore = scoreBreakdown.trendStrengthScore;
+  const trendScore = strategyFeatures.trendScoreStatus === "NOT_COMPUTED" ? 0 : trendVal;
 
   return {
     symbol: snapshot.symbol,
     price,
     spreadBps,
     volume24hUsd,
-    change24hPct,
+    change24hPct: changeSan.value,
+    change24hRaw: changeSan.rawValue,
     change1hPct,
     marketCapUsd,
     momentumScore,
@@ -423,6 +476,7 @@ export function buildScanCandidate(input: {
     liquidityScore,
     spreadScore,
     trendScore,
+    trendScoreStatus: strategyFeatures.trendScoreStatus,
     dataQualityScore,
     riskPenalty,
     pumpRiskPenalty,
@@ -431,6 +485,10 @@ export function buildScanCandidate(input: {
     riskTier,
     shortTermReturnPct: ret,
     breakoutScore: breakout,
+    breakoutScoreStatus: strategyFeatures.breakoutScoreStatus,
+    discoveryOnly: source === "coingecko" && !isConfirmedTradable(availability),
+    providerAnomalyFlags: anomalyFlags,
+    change24hDrivesScore: changeSan.outlier,
     source,
     tradableOnConfiguredExchange: isConfirmedTradable(availability),
     availability,

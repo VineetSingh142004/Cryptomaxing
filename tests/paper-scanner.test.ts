@@ -308,7 +308,7 @@ describe("opportunity scanner", () => {
     });
     expect(c.action).toBe("WATCHLIST_ONLY");
     expect(c.actionType).toBe("WATCHLIST_ONLY");
-    expect(c.reasonCode).toBe("NOT_TRADABLE_ON_EXCHANGE");
+    expect(c.reasonCode).toBe("COINGECKO_DISCOVERY_ONLY_NOT_TRADEABLE");
   });
 
   it("summarizes rejection reasons", () => {

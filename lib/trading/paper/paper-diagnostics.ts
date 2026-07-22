@@ -34,6 +34,7 @@ export function buildPaperRunDiagnostics(input: {
   timestamp?: string;
   followUpPrices?: Map<string, number>;
   tinyBExecution?: import("@/lib/trading/paper/tiny-b-execution").TinyBExecutionSummary;
+  providerHealth?: import("@/lib/trading/paper/provider-health-gate").ProviderHealthGateResult;
 }): PaperRunDiagnostics {
   const best = [...input.ranked].sort((a, b) => b.opportunityScore - a.opportunityScore)[0] ?? null;
   const featureScoreHealth = buildFeatureScoreHealth({
@@ -66,6 +67,21 @@ export function buildPaperRunDiagnostics(input: {
     hasTinyBDecision: hasTinyBDecision && input.tradesOpenedThisRun === 0,
     marketDataStatus: input.marketDataStatus,
   });
+
+  if (input.providerHealth && !input.providerHealth.tradeReadyCandidatesAllowed) {
+    botWorkingVerdict = {
+      status: input.providerHealth.status as BotWorkingVerdict["status"],
+      headline: input.providerHealth.headline,
+      explanation: input.providerHealth.dashboardMessage,
+      badMarketVsBrokenBot: "BROKEN_BOT",
+      simulatedLabel: "SIMULATED_PAPER_ONLY",
+    };
+  } else if (input.providerHealth?.status === "PROVIDER_HEALTHY") {
+    botWorkingVerdict = {
+      ...botWorkingVerdict,
+      badMarketVsBrokenBot: botWorkingVerdict.badMarketVsBrokenBot === "BROKEN_BOT" ? "READY" : botWorkingVerdict.badMarketVsBrokenBot,
+    };
+  }
 
   if (
     input.tinyBExecution &&

@@ -3,6 +3,7 @@ import type { ScanCandidate } from "@/lib/trading/paper/opportunity-scanner";
 import type { RiskTier } from "@/lib/trading/paper/scanner-config";
 import { isPrismaStaleError } from "@/lib/trading/paper/prisma-health";
 import { CURRENT_PAPER_STRATEGY_VERSION } from "@/lib/trading/paper/paper-strategy-version";
+import { sanitizeChange24hPct } from "@/lib/trading/paper/field-sanitization";
 
 const MAX_SYMBOL_LEN = 32;
 const MAX_SOURCE_LEN = 64;
@@ -251,7 +252,11 @@ export function prepareCandidateWriteData(
   const price = dec24("price", c.price, true);
   const spreadBps = dec12("spreadBps", c.spreadBps);
   const volume24hUsd = dec24("volume24hUsd", c.volume24hUsd, true);
-  const change24hPct = dec12("change24hPct", c.change24hPct);
+  const change24hSanitized = sanitizeChange24hPct(c.change24hPct ?? 0);
+  const change24hPct = dec12("change24hPct", change24hSanitized.value);
+  if (change24hSanitized.outlier) {
+    fieldWarnings.push(`change24hPct outlier sanitized (raw ${change24hSanitized.rawValue})`);
+  }
   const marketCap = dec36("marketCap", c.marketCapUsd);
 
   if (fieldErrors.price) {
